@@ -3,8 +3,11 @@ import { useShallow } from 'zustand/react/shallow';
 
 import { Alert, Box, CircularProgress } from '@mui/joy';
 
-import { ConfirmationModal } from '~/common/components/ConfirmationModal';
+import { ConfirmationModal } from '~/common/components/modals/ConfirmationModal';
+import { ShortcutKey, useGlobalShortcuts } from '~/common/components/shortcuts/useGlobalShortcuts';
 import { animationEnterScaleUp } from '~/common/util/animUtils';
+import { copyToClipboard } from '~/common/util/clipboardUtils';
+import { messageFragmentsReduceText } from '~/common/stores/chat/chat.message';
 import { useUICounter } from '~/common/state/store-ui';
 
 import { BeamExplainer } from './BeamExplainer';
@@ -14,6 +17,7 @@ import { BeamRayGrid } from './scatter/BeamRayGrid';
 import { BeamScatterInput } from './scatter/BeamScatterInput';
 import { BeamScatterPane } from './scatter/BeamScatterPane';
 import { BeamStoreApi, useBeamStore } from './store-beam.hooks';
+import { useModuleBeamStore } from './store-module-beam';
 
 
 export function BeamView(props: {
@@ -24,28 +28,36 @@ export function BeamView(props: {
 }) {
 
   // state
+  const [hasAutoMerged, setHasAutoMerged] = React.useState(false);
   const [warnIsScattering, setWarnIsScattering] = React.useState(false);
 
   // external state
   const { novel: explainerUnseen, touch: explainerCompleted, forget: explainerShow } = useUICounter('beam-wizard');
+  const { cardAdd, gatherAutoStartAfterScatter } = useModuleBeamStore(useShallow(state => ({
+    cardAdd: state.cardAdd,
+    gatherAutoStartAfterScatter: state.gatherAutoStartAfterScatter,
+  })));
   const {
-    /* root */ editInputHistoryMessage,
+    /* root */ inputHistoryReplaceMessageFragment,
     /* scatter */ setRayCount, startScatteringAll, stopScatteringAll,
   } = props.beamStore.getState();
   const {
     /* root */ inputHistory, inputIssues, inputReady,
-    /* scatter */ isScattering, raysReady,
+    /* scatter */ hadImportedRays, isScattering, raysReady,
     /* gather (composite) */ canGather,
   } = useBeamStore(props.beamStore, useShallow(state => ({
+    // input
     inputHistory: state.inputHistory,
     inputIssues: state.inputIssues,
     inputReady: state.inputReady,
     // scatter
+    hadImportedRays: state.hadImportedRays,
     isScattering: state.isScattering,
     raysReady: state.raysReady,
     // gather (composite)
     canGather: state.raysReady >= 2 && state.currentFactoryId !== null && state.currentGatherLlmId !== null,
   })));
+  // the following are independent because of useShallow, which would break in the above call
   const rayIds = useBeamStore(props.beamStore, useShallow(state => state.rays.map(ray => ray.rayId)));
   const fusionIds = useBeamStore(props.beamStore, useShallow(state => state.fusions.map(fusion => fusion.fusionId)));
 
@@ -59,6 +71,27 @@ export function BeamView(props: {
 
   const handleRayIncreaseCount = React.useCallback(() => setRayCount(raysCount + 1), [setRayCount, raysCount]);
 
+  const handleRaysOperation = React.useCallback((operation: 'copy' | 'use') => {
+    const { rays, onSuccessCallback } = props.beamStore.getState();
+    const allFragments = rays.flatMap(ray => ray.message.fragments);
+    if (allFragments.length) {
+      switch (operation) {
+        case 'copy':
+          const combinedText = messageFragmentsReduceText(allFragments, '\n\n\n---\n\n\n');
+          copyToClipboard(combinedText, 'All Beams');
+          break;
+        case 'use':
+          onSuccessCallback?.({ fragments: allFragments });
+          break;
+      }
+    }
+  }, [props.beamStore]);
+
+  const handleScatterStart = React.useCallback(() => {
+    setHasAutoMerged(false);
+    startScatteringAll();
+  }, [startScatteringAll]);
+
 
   const handleCreateFusion = React.useCallback(() => {
     // if scatter is busy, ask for confirmation
@@ -70,20 +103,31 @@ export function BeamView(props: {
   }, [isScattering, props.beamStore]);
 
 
-  const handleStopScatterConfirmation = React.useCallback(() => {
+  const handleStartMergeConfirmation = React.useCallback(() => {
     setWarnIsScattering(false);
     stopScatteringAll();
     handleCreateFusion();
   }, [handleCreateFusion, stopScatteringAll]);
 
-  const handleStopScatterDenial = React.useCallback(() => setWarnIsScattering(false), []);
+  const handleStartMergeDenial = React.useCallback(() => setWarnIsScattering(false), []);
 
 
-  // (this is great ux) scatter freed up while we were asking the question, proceed
+  // auto-merge
+  const shallAutoMerge = gatherAutoStartAfterScatter && canGather && !isScattering && !hasAutoMerged;
   React.useEffect(() => {
-    if (warnIsScattering && !isScattering)
-      handleStopScatterConfirmation();
-  }, [handleStopScatterConfirmation, isScattering, warnIsScattering]);
+    if (shallAutoMerge) {
+      setHasAutoMerged(true);
+      handleStartMergeConfirmation();
+    }
+  }, [handleStartMergeConfirmation, shallAutoMerge]);
+
+  // (great ux) scatter finished while the "start merge" (warning) dialog is up: dismiss dialog and proceed
+  // here we assume that 'warnIsScattering' shows the intention of the user to proceed with a merge asap
+  const shallResumeMerge = warnIsScattering && !isScattering && !gatherAutoStartAfterScatter;
+  React.useEffect(() => {
+    if (shallResumeMerge)
+      handleStartMergeConfirmation();
+  }, [handleStartMergeConfirmation, shallResumeMerge]);
 
 
   // runnning
@@ -95,13 +139,20 @@ export function BeamView(props: {
   // }, [bootup, handleRaySetCount]);
 
 
+  // intercept ctrl+enter and esc
+  useGlobalShortcuts('BeamView', React.useMemo(() => [
+    { key: ShortcutKey.Enter, ctrl: true, action: handleScatterStart, disabled: isScattering, level: 1 },
+    ...(isScattering ? [{ key: ShortcutKey.Esc, action: stopScatteringAll, level: 10 + 1 /* becasuse > ChatBarAltBeam */ }] : []),
+  ], [handleScatterStart, isScattering, stopScatteringAll]));
+
+
   // Explainer, if unseen
   if (props.showExplainer && explainerUnseen)
     return <BeamExplainer onWizardComplete={explainerCompleted} />;
 
   return <>
 
-    <Box sx={{
+    <Box role='beam-list' sx={{
       // scroller fill
       minHeight: '100%',
       // ...props.sx,
@@ -127,7 +178,7 @@ export function BeamView(props: {
       <BeamScatterInput
         isMobile={props.isMobile}
         history={inputHistory}
-        editHistory={editInputHistoryMessage}
+        onMessageFragmentReplace={inputHistoryReplaceMessageFragment}
       />
 
       {/* Scatter Controls */}
@@ -136,9 +187,10 @@ export function BeamView(props: {
         isMobile={props.isMobile}
         rayCount={raysCount}
         setRayCount={handleRaySetCount}
+        showRayAdd={!cardAdd}
         startEnabled={inputReady}
         startBusy={isScattering}
-        onStart={startScatteringAll}
+        onStart={handleScatterStart}
         onStop={stopScatteringAll}
         onExplainerShow={explainerShow}
       />
@@ -149,7 +201,11 @@ export function BeamView(props: {
         beamStore={props.beamStore}
         isMobile={props.isMobile}
         rayIds={rayIds}
+        showRayAdd={cardAdd}
+        showRaysOps={(isScattering || raysReady < 2) ? undefined : raysReady}
+        hadImportedRays={hadImportedRays}
         onIncreaseRayCount={handleRayIncreaseCount}
+        onRaysOperation={handleRaysOperation}
         // linkedLlmId={currentGatherLlmId}
       />
 
@@ -163,7 +219,7 @@ export function BeamView(props: {
         beamStore={props.beamStore}
         canGather={canGather}
         isMobile={props.isMobile}
-        onAddFusion={handleCreateFusion}
+        // onAddFusion={handleCreateFusion}
         raysReady={raysReady}
       />
 
@@ -184,8 +240,8 @@ export function BeamView(props: {
     {warnIsScattering && (
       <ConfirmationModal
         open
-        onClose={handleStopScatterDenial}
-        onPositive={handleStopScatterConfirmation}
+        onClose={handleStartMergeDenial}
+        onPositive={handleStartMergeConfirmation}
         // lowStakes
         noTitleBar
         confirmationText='Some responses are still being generated. Do you want to stop and proceed with merging the available responses now?'

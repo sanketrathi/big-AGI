@@ -5,13 +5,15 @@ import { CapabilityBrowsing } from '~/common/components/useCapabilities';
 import { getBackendCapabilities } from '~/modules/backend/store-backend-capabilities';
 
 
+export type BrowsePageTransform = 'html' | 'text' | 'markdown';
+
 interface BrowseState {
 
   wssEndpoint: string;
   setWssEndpoint: (url: string) => void;
 
-  enableCommandBrowse: boolean;
-  setEnableCommandBrowse: (value: boolean) => void;
+  pageTransform: BrowsePageTransform;
+  setPageTransform: (transform: BrowsePageTransform) => void;
 
   enableComposerAttach: boolean;
   setEnableComposerAttach: (value: boolean) => void;
@@ -31,8 +33,8 @@ export const useBrowseStore = create<BrowseState>()(
       wssEndpoint: '', // default WSS endpoint
       setWssEndpoint: (wssEndpoint: string) => set(() => ({ wssEndpoint })),
 
-      enableCommandBrowse: true,
-      setEnableCommandBrowse: (enableCommandBrowse: boolean) => set(() => ({ enableCommandBrowse })),
+      pageTransform: 'text',
+      setPageTransform: (pageTransform: BrowsePageTransform) => set(() => ({ pageTransform })),
 
       enableComposerAttach: true,
       setEnableComposerAttach: (enableComposerAttach: boolean) => set(() => ({ enableComposerAttach })),
@@ -56,7 +58,7 @@ export function useBrowseCapability(): CapabilityBrowsing {
   const isServerConfig = getBackendCapabilities().hasBrowsing;
 
   // external client state
-  const { wssEndpoint, enableCommandBrowse, enableComposerAttach, enableReactTool, enablePersonaTool } = useBrowseStore();
+  const { wssEndpoint, enableComposerAttach, enableReactTool, enablePersonaTool } = useBrowseStore();
 
   // derived state
   const isClientConfig = !!wssEndpoint;
@@ -68,7 +70,6 @@ export function useBrowseCapability(): CapabilityBrowsing {
     isServerConfig,
     isClientConfig,
     isClientValid,
-    inCommand: mayWork && enableCommandBrowse,
     inComposer: mayWork && enableComposerAttach,
     inReact: mayWork && enableReactTool,
     inPersonas: mayWork && enablePersonaTool,

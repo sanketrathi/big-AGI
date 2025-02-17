@@ -1,157 +1,320 @@
-import type { StateStorage } from 'zustand/middleware';
-import { del as idbDel, get as idbGet, set as idbSet } from 'idb-keyval';
-
-// used by the state storage middleware to detect data migration from the old state storage (localStorage)
-// NOTE: remove past 2024-03-19 (6 months past release of this utility conversion)
-export const IDB_MIGRATION_INITIAL = -1;
-
-
-// set to true to enable debugging
-const DEBUG_SCHEDULER = false;
-const USER_LOG_ISSUES = true;
-
-
-interface PendingWrite {
-  timeoutId: ReturnType<typeof setTimeout> | null;
-  firstAttemptTime: number;
-  pendingValue: string | null;
-}
-
 /**
- * The write scheduler is a simple utility that batches write operations to IndexedDB.
- * Should be reasonably efficient and won't block the main thread. Schreuled writes shall happen within
- * the deadline, which will help the UI survive intense load.
+ * Copyright (c) 2024 Enrico Ros
+ *
+ * Faster Zustand storage backend serializing objects just before write.
+ * Moreover uses a deadline-based scheduler to batch writes, with an aggregation window.
  */
-class WriteScheduler {
-  private writeOperations: Record<string, PendingWrite> = {};
 
-  constructor(readonly maxDeadline: number = 600, readonly minInterval: number = 250) {
+import type { PersistStorage, StorageValue } from 'zustand/middleware';
+import { get as idbGet, set as idbSet } from 'idb-keyval';
+
+
+// [DEV] configuration
+const DEBUG_SCHEDULER = false;
+const IDB_MERGE_WINDOW = 321;   // not a magic number, just a random value
+const IDB_DEADLINE = 1234;      // breaks the pace
+
+
+type SetKey = string;
+
+type SetOperation = {
+  queueDeadline: number | null;
+  scheduledTimerId: ReturnType<typeof setTimeout> | null;
+  lastState: null | StorageValue<any>;
+  needsWrite: boolean;
+  isWriting: boolean; // [r: all, w: performWrite]
+};
+
+
+const _warn = (...args: any[]) => console.warn('IndexedDB:', ...args);
+const _devWarn = (...args: any[]) => console.warn('[DEV] IndexedDB:', ...args);
+
+
+class IndexedDBWriteScheduler {
+
+  private writeOperations: Record<SetKey, SetOperation> = {};
+
+  constructor(readonly mergeWindow: number, readonly deadline: number) {
   }
 
-  scheduleWrite(key: string, value: string): void {
-    const now = Date.now();
-    const operation = this.writeOperations[key] || { timeoutId: null, firstAttemptTime: now, pendingValue: null };
 
-    if (operation.timeoutId !== null) {
-      // if (DEBUG_SCHEDULER)
-      //   console.warn(' - idb_WS: clr_write', key);
-      clearTimeout(operation.timeoutId);
-      operation.timeoutId = null;
+  async getItem<S>(key: SetKey): Promise<StorageValue<S> | null> {
+    // in-mem recycle: unexpected, but implemented
+    const operation = this.writeOperations[key];
+    if (operation && operation.lastState !== null) {
+      _devWarn(`unexpected in-mem recycle of '${key}'`);
+      return operation.lastState;
     }
 
-    if (!operation.firstAttemptTime)
-      operation.firstAttemptTime = now;
-    operation.pendingValue = value;
-    this.writeOperations[key] = operation;
+    // fetch from IDB
+    const jsonState = await this.#idbReadString(key);
+    if (jsonState === null) return null; // first time is null (not found in storage)
 
-    const timeSinceFirstAttempt = now - operation.firstAttemptTime;
-    let writeDelay = this.minInterval;
-
-    if (timeSinceFirstAttempt + this.minInterval > this.maxDeadline)
-      writeDelay = this.maxDeadline - timeSinceFirstAttempt;
-
-    if (writeDelay < 10) {
-      if (DEBUG_SCHEDULER)
-        console.warn(' - idb_WS: deadline write', key, '(delay:', writeDelay, ')');
-      this.performWrite(key).catch(error => {
-        if (USER_LOG_ISSUES)
-          console.warn('idbUtils: E1: writing', key, error);
-      });
-    } else {
-      if (DEBUG_SCHEDULER)
-        console.warn(' - idb_WS: schedule', key, 'at', writeDelay, 'ms');
-      operation.timeoutId = setTimeout(() => {
-        this.performWrite(key).catch(error => {
-          if (USER_LOG_ISSUES)
-            console.warn('idbUtils: E2: writing', key, error);
-        });
-      }, writeDelay);
+    // deserialize
+    try {
+      return JSON.parse(jsonState) as StorageValue<S>;
+    } catch (error: any) {
+      _warn(`GET: reading error for '${key}':`, error);
+      return null;
     }
   }
 
-  async performWrite(key: string): Promise<void> {
+  setItem<S>(key: SetKey, newValue: StorageValue<S>): void {
+
+    // do not serialize now, just store the object in the work order
     const operation = this.writeOperations[key];
     if (!operation) {
-      if (USER_LOG_ISSUES)
-        console.warn('idbUtils: write operation not found for', key);
-      return;
-    }
-    const walueToWrite = operation.pendingValue;
-    operation.timeoutId = null;
-    operation.firstAttemptTime = 0;
-    operation.pendingValue = null;
-    if (walueToWrite === null) {
-      if (USER_LOG_ISSUES)
-        console.warn('idbUtils: write operation has no pending value for', key);
+      if (DEBUG_SCHEDULER) _devWarn(`SET.${key} new operation`);
+      this.writeOperations[key] = {
+        queueDeadline: Date.now() + this.deadline,
+        scheduledTimerId: null,
+        lastState: newValue,
+        needsWrite: true,
+        isWriting: false,
+      };
     } else {
-      const start = Date.now();
-      if (DEBUG_SCHEDULER)
-        console.log(' - idb: [SET]', key);
-      await idbSet(key, walueToWrite);
-      if (DEBUG_SCHEDULER)
-        console.warn('   (write time:', Date.now() - start, 'ms, bytes:', walueToWrite.length.toLocaleString(), ')');
+      if (DEBUG_SCHEDULER) _devWarn(`SET.${key} updating operation`);
+      if (!operation.queueDeadline)
+        operation.queueDeadline = Date.now() + this.deadline;
+      operation.lastState = newValue;
+      operation.needsWrite = true;
+    }
+
+    // schedule the write
+    this.#scheduleWrite(key);
+  }
+
+  async setItemDirect<S>(key: SetKey, newValue: StorageValue<S>): Promise<void> {
+    return this.#idbWriteString(key, JSON.stringify(newValue));
+  }
+
+
+  // scheduling
+
+  #scheduleWrite(key: SetKey): void {
+    const operation = this.writeOperations[key];
+    if (!operation) return;
+
+    if (!operation.needsWrite) return;
+    if (operation.isWriting) return;
+
+    const now = Date.now();
+
+    const timeUntilMerge = this.mergeWindow;
+    const timeUntilDeadline = operation.queueDeadline ? operation.queueDeadline - now : 0; // 0 should not be an option, as state is set correctly
+    const delay = Math.max(Math.min(timeUntilMerge, timeUntilDeadline), 0);
+
+    if (delay > 0) {
+
+      // schedule/reshedule the write
+
+      if (DEBUG_SCHEDULER) _devWarn(` - schedule ${key}: ${operation.scheduledTimerId ? 'reschedule' : 'schedule'} in ${delay} ms`);
+      if (operation.scheduledTimerId)
+        clearTimeout(operation.scheduledTimerId);
+      operation.scheduledTimerId = setTimeout(() => {
+        void this.#performWrite(key);
+      }, delay);
+
+    } else {
+
+      // we are past the deadline
+
+      if (DEBUG_SCHEDULER) _devWarn(` - schedule ${key}: ${operation.scheduledTimerId ? 'just wait (already pending)' : 'schedule 0-delay'}`);
+      if (operation.scheduledTimerId) {
+        // there's already a timer scheduled, so we don't need to do anything
+        return;
+      }
+
+      operation.scheduledTimerId = setTimeout(() => {
+        void this.#performWrite(key);
+      }, 0);
     }
   }
 
-  async retrievePendingWrite(key: string): Promise<string | null> {
-    // If there's a pending value, return it immediately
+  async #performWrite(key: SetKey): Promise<void> {
     const operation = this.writeOperations[key];
-    if (operation && operation.pendingValue !== null) {
-      if (DEBUG_SCHEDULER)
-        console.warn(' - idb_WS: read_pending', key, 'deadline:', operation.firstAttemptTime + this.maxDeadline - Date.now(), 'ms');
-      return operation.pendingValue;
+    if (!operation) return;
+
+    // set the state for the scheduling operations to come
+    const state = operation.lastState;
+    operation.queueDeadline = null;
+    if (operation.scheduledTimerId) {
+      clearTimeout(operation.scheduledTimerId);
+      operation.scheduledTimerId = null;
+    }
+    operation.lastState = null;
+    operation.needsWrite = false;
+    operation.isWriting = true;
+
+    try {
+
+      // serialize
+      const dateStart = Date.now();
+      const serialized = JSON.stringify(state);
+      if (DEBUG_SCHEDULER) _devWarn(`SET '${key}': serialized ${serialized?.length?.toLocaleString()} bytes in ${Date.now() - dateStart} ms`);
+
+      // Optimization - ? unsure, needs testing
+      // (globalThis as any)?.scheduler?.yield?.();
+
+      // write to IDB
+      await this.#idbWriteString(key, serialized);
+
+    } catch (error: any) {
+      _warn(`SET '${key}': serialization error:`, error);
     }
 
-    // If there's no operation or pending value, return null indicating no data is available
-    return null;
+    // done
+    operation.isWriting = false;
+
+    // schedule the next write
+    this.#scheduleWrite(key);
+
+  }
+
+
+  // with strings
+
+  async #idbReadString(key: SetKey): Promise<string | null> {
+    const now = Date.now();
+    const counter = ++this.#readOpCounter;
+    try {
+      if (DEBUG_SCHEDULER) _devWarn(`GET ${key}(${counter})`);
+      const jsonState = await idbGet(key) ?? null;
+      if (DEBUG_SCHEDULER) _devWarn(jsonState === null ? `GET ${key}(${counter}) -> missing` : `GET ${key}(${counter}) -> read ${jsonState?.length?.toLocaleString()} bytes in ${Date.now() - now} ms`);
+      return jsonState;
+    } catch (error: any) {
+      _warn(`GET '${key}(${counter})': read error:`, error);
+      return null;
+    }
+  }
+
+  async #idbWriteString(key: SetKey, jsonState: string): Promise<void> {
+    const now = Date.now();
+    const counter = ++this.#writeOpCounter;
+    try {
+      if (DEBUG_SCHEDULER) _devWarn(`SET ${key}(${counter})`);
+      await idbSet(key, jsonState);
+      if (DEBUG_SCHEDULER) _devWarn(`SET ${key}(${counter}) -> wrote ${jsonState?.length?.toLocaleString()} bytes in ${Date.now() - now} ms`);
+    } catch (error: any) {
+      _warn(`SET '${key}(${counter})': write error:`, error);
+    }
+  }
+
+
+  // private fields
+  #readOpCounter = 0;
+  #writeOpCounter = 0;
+
+}
+
+
+const _idbScheduler = new IndexedDBWriteScheduler(IDB_MERGE_WINDOW, IDB_DEADLINE);
+
+/**
+ * Thin adapter to use the new scheduler with Zustand.
+ */
+export function createIDBPersistStorage<S>(): PersistStorage<S> | undefined {
+
+  // server-side or no IDB support
+  if (typeof window === 'undefined')
+    return undefined;
+  if (!('indexedDB' in window)) {
+    _warn('[FATAL] IndexedDB is not supported in this browser.');
+    return undefined;
+  }
+
+  return {
+    getItem: async (name: string): Promise<StorageValue<S> | null> => _idbScheduler.getItem(name),
+    setItem: (name: string, newValue: StorageValue<S>): void => _idbScheduler.setItem(name, newValue),
+    removeItem: async (_name: string): Promise<void> => {
+      // We do NOT remove! We don't intend to implement this, on purpose
+    },
+  };
+}
+
+
+export async function backupIdbV3(keyFrom: string, keyTo: string): Promise<boolean> {
+  try {
+    const existingItem = await _idbScheduler.getItem(keyFrom);
+    if (existingItem === null) {
+      _warn(`idbUtils: backupIdbV3: item not found: '${keyFrom}'`);
+      return false;
+    }
+    await _idbScheduler.setItemDirect(keyTo, existingItem);
+    return true;
+  } catch (error) {
+    _warn(`idbUtils: backupIdbV3: Error backing up from '${keyFrom}' to '${keyTo}':`, error);
+    return false;
   }
 }
 
-const writeScheduler = new WriteScheduler(1000, 400);
+/// Maintenance
 
+/* Sets a single key-value in a given IndexedDB key-value store.
 
-/**
- * A Zustand state storage implementation that uses IndexedDB as a simple key-value store
- */
-export const idbStateStorage: StateStorage = {
-  getItem: async (name: string): Promise<string | null> => {
-    // if (DEBUG_SCHEDULER)
-    //   console.warn(' - idb: get', name);
+function setValue(dbName, key, value) {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(dbName);
+    request.onerror = event => reject(new Error('Error opening database: ' + event.target.error));
+    request.onsuccess = event => {
+      const db = event.target.result;
+      const transaction = db.transaction('keyval', 'readwrite');
+      const store = transaction.objectStore('keyval');
 
-    // If there's a pending value, return it directly
-    const pendingValue = await writeScheduler.retrievePendingWrite(name);
-    if (pendingValue !== null)
-      return pendingValue;
+      const updateRequest = store.put(value, key);
+      updateRequest.onerror = event => reject(new Error('Error updating JSON string: ' + event.target.error));
+      updateRequest.onsuccess = () => resolve('Successfully updated JSON string.');
+    };
+  });
+}
 
-    // If there's no pending value, proceed to fetch from IndexedDB
-    if (DEBUG_SCHEDULER)
-      console.warn(' - idb: [GET]', name);
-    const value: string | undefined = await idbGet(name);
-    if (DEBUG_SCHEDULER)
-      console.warn('   (read bytes:', value?.length?.toLocaleString(), ')');
+function copyValue(dbName, sourceKey, targetKey) {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(dbName);
+    request.onerror = event => reject(new Error('Error opening database: ' + event.target.error));
+    request.onsuccess = event => {
+      const db = event.target.result;
+      const transaction = db.transaction('keyval', 'readwrite');
+      const store = transaction.objectStore('keyval');
 
-    /* IMPORTANT!
-     * We modify the default behavior of `getItem` to return a {version: -1} object if a key is not found.
-     * This is to trigger the migration across state storage implementations, as Zustand would not call the
-     * 'migrate' function otherwise.
-     * See 'https://github.com/enricoros/big-agi/pull/158' for more details
-     */
-    if (value === undefined) {
-      return JSON.stringify({
-        version: IDB_MIGRATION_INITIAL,
-      });
-    }
-    return value || null;
-  },
-  setItem: (name: string, value: string): void => {
-    // if (DEBUG_SCHEDULER)
-    //   console.warn(' - idb: set', name);
+      const getRequest = store.get(sourceKey);
+      getRequest.onerror = event => reject(new Error('Error retrieving value: ' + event.target.error));
+      getRequest.onsuccess = () => {
+        const value = getRequest.result;
 
-    writeScheduler.scheduleWrite(name, value);
-  },
-  removeItem: async (name: string): Promise<void> => {
-    if (DEBUG_SCHEDULER)
-      console.warn(' - idb: del', name);
-    await idbDel(name);
-  },
-};
+        if (value === undefined) {
+          reject(new Error(`No value found for key: ${sourceKey}`));
+          return;
+        }
+
+        const putRequest = store.put(value, targetKey);
+        putRequest.onsuccess = () => resolve(`Successfully copied value from ${sourceKey} to ${targetKey}.`);
+        putRequest.onerror = event => reject(new Error('Error copying value: ' + event.target.error));
+      };
+    };
+  });
+}
+
+function deleteValue(dbName, key) {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(dbName);
+    request.onerror = event => reject(new Error('Error opening database: ' + event.target.error));
+    request.onsuccess = event => {
+      const db = event.target.result;
+      const transaction = db.transaction('keyval', 'readwrite');
+      const store = transaction.objectStore('keyval');
+
+      const deleteRequest = store.delete(key);
+      deleteRequest.onerror = event => reject(new Error('Error deleting value: ' + event.target.error));
+      deleteRequest.onsuccess = () => resolve(`Successfully deleted value for key: ${key}.`);
+    };
+  });
+}
+
+// Example usage:
+const myNewJsonString = '{"your": "new json string"}'; // Replace with your desired JSON string
+await setValue('keyval-store', 'app-chats', myNewJsonString);
+await copyValue('keyval-store', 'app-chats-copy', 'app-chats');
+await deleteValue('keyval-store', 'app-chats-prev');
+
+*/

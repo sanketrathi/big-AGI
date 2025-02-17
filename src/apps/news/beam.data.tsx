@@ -2,19 +2,18 @@ import * as React from 'react';
 
 import { Button, Card, CardContent, Grid, Typography } from '@mui/joy';
 import LaunchIcon from '@mui/icons-material/Launch';
-import ThumbUpRoundedIcon from '@mui/icons-material/ThumbUpRounded';
 
 import { Link } from '~/common/components/Link';
 
 
-export const beamReleaseDate = '2024-04-01T22:00:00Z';
+// export const beamReleaseDate = '2024-04-01T22:00:00Z';
 export const beamBlogUrl = 'https://big-agi.com/blog/beam-multi-model-ai-reasoning/';
 
 export const beamNewsCallout =
   <Card variant='solid' invertedColors>
     <CardContent sx={{ gap: 2 }}>
       <Typography level='title-lg'>
-        Beam - just launched in 1.15
+        Beam - launched in 1.15
       </Typography>
       <Typography level='body-sm'>
         Beam is a world-first, multi-model AI chat modality that accelerates the discovery of superior solutions by leveraging the collective strengths of diverse LLMs.

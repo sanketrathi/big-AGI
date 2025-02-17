@@ -1,62 +1,95 @@
 import * as React from 'react';
-import { shallow } from 'zustand/shallow';
+import { useShallow } from 'zustand/react/shallow';
 
-import { Checkbox, FormControl, FormHelperText } from '@mui/joy';
+import { Checkbox, FormControl, FormHelperText, FormLabel, Option, Select, Typography } from '@mui/joy';
 
+import { AlreadySet } from '~/common/components/AlreadySet';
+import { ExternalLink } from '~/common/components/ExternalLink';
 import { FormInputKey } from '~/common/components/forms/FormInputKey';
-import { Link } from '~/common/components/Link';
+import { FormLabelStart } from '~/common/components/forms/FormLabelStart';
 import { platformAwareKeystrokes } from '~/common/components/KeyStroke';
 
 import { useBrowseCapability, useBrowseStore } from './store-module-browsing';
 
 
+const _styleHelperText = {
+  fontSize: 'xs',
+} as const;
+
+
 export function BrowseSettings() {
 
   // external state
-  const { mayWork, isServerConfig, isClientValid, inCommand, inComposer, inReact } = useBrowseCapability();
-  const { wssEndpoint, setWssEndpoint, setEnableCommandBrowse, setEnableComposerAttach, setEnableReactTool } = useBrowseStore(state => ({
+  const { mayWork, isServerConfig, isClientValid, inComposer, inReact, inPersonas } = useBrowseCapability();
+  const {
+    wssEndpoint, setWssEndpoint,
+    pageTransform, setPageTransform,
+    setEnableComposerAttach, setEnableReactTool, setEnablePersonaTool,
+  } = useBrowseStore(useShallow(state => ({
     wssEndpoint: state.wssEndpoint,
+    pageTransform: state.pageTransform,
+    setPageTransform: state.setPageTransform,
     setWssEndpoint: state.setWssEndpoint,
-    setEnableCommandBrowse: state.setEnableCommandBrowse,
     setEnableComposerAttach: state.setEnableComposerAttach,
     setEnableReactTool: state.setEnableReactTool,
-  }), shallow);
+    setEnablePersonaTool: state.setEnablePersonaTool,
+  })));
+
+  const handlePageTransformChange = (_event: any, value: typeof pageTransform | null) => value && setPageTransform(value);
+
 
   return <>
 
-    <FormHelperText sx={{ display: 'block' }}>
-      Configure a browsing service to enable loading links and pages. See the <Link
-      href='https://github.com/enricoros/big-agi/blob/main/docs/config-feature-browse.md' target='_blank' noLinkStyle>
-      browse configuration guide</Link> for more information.
-    </FormHelperText>
+    <Typography level='body-sm'>
+      Enables downloading of web pages. <ExternalLink href='https://big-agi.com/docs/config-feature-browse'>Learn more</ExternalLink>.<br />
+      <b>Web Search</b> is configured separately and requires a Google API key.
+      {/*Web Browser lets the AI visit and analyze web pages in real-time. <ExternalLink href='https://big-agi.com/docs/config-feature-browse'>Learn more about setup</ExternalLink>.*/}
+    </Typography>
 
     <FormInputKey
-      autoCompleteId='browse-wss' label='Puppeteer Endpoint' noKey
+      autoCompleteId='browse-wss' label='Puppeteer Wss' noKey
       value={wssEndpoint} onChange={setWssEndpoint}
-      rightLabel={!isServerConfig ? 'required' : '✔️ already set in server'}
+      rightLabel={<AlreadySet required={!isServerConfig} />}
       required={!isServerConfig} isError={!isClientValid && !isServerConfig}
       placeholder='wss://...'
     />
 
+
+    <FormControl orientation='horizontal' sx={{ justifyContent: 'space-between', alignItems: 'center' }}>
+      <FormLabelStart title='Web page to LLM' description={pageTransform === 'text' ? 'Converts to text' : pageTransform === 'markdown' ? 'Converts to markdown' : 'Preserves HTML (heavy)'} />
+      <Select
+        variant='outlined'
+        value={pageTransform} onChange={handlePageTransformChange}
+        slotProps={{
+          root: { sx: { minWidth: '140px' } },
+          indicator: { sx: { opacity: 0.5 } },
+          button: { sx: { whiteSpace: 'inherit' } },
+        }}
+      >
+        <Option value='text'>Text (default)</Option>
+        <Option value='markdown'>Markdown</Option>
+        <Option value='html'>HTML</Option>
+      </Select>
+    </FormControl>
+
+
+    <FormLabel>Enable page loading for:</FormLabel>
+
     <FormControl disabled={!mayWork}>
-      <Checkbox variant='outlined' label='Attach URLs' checked={inComposer} onChange={(event) => setEnableComposerAttach(event.target.checked)} />
-      <FormHelperText>{platformAwareKeystrokes('Load and attach a page when pasting a URL')}</FormHelperText>
+      <Checkbox size='sm' label='Attachments' checked={inComposer} onChange={(event) => setEnableComposerAttach(event.target.checked)} />
+      <FormHelperText sx={_styleHelperText}>{platformAwareKeystrokes('Load and attach when pasting a URL')}</FormHelperText>
     </FormControl>
 
     <FormControl disabled={!mayWork}>
-      <Checkbox variant='outlined' label='/browse' checked={inCommand} onChange={(event) => setEnableCommandBrowse(event.target.checked)} />
-      <FormHelperText>{platformAwareKeystrokes('Use /browse to load a web page')}</FormHelperText>
+      <Checkbox size='sm' label='ReAct' checked={inReact} onChange={(event) => setEnableReactTool(event.target.checked)} />
+      <FormHelperText sx={_styleHelperText}>Enables loadURL() in ReAct</FormHelperText>
     </FormControl>
 
-    <FormControl disabled={!mayWork}>
-      <Checkbox variant='outlined' label='ReAct' checked={inReact} onChange={(event) => setEnableReactTool(event.target.checked)} />
-      <FormHelperText>Enables loadURL() in ReAct</FormHelperText>
+    <FormControl disabled>
+      <Checkbox size='sm' label='Personas browsing tool' checked={false} onChange={(event) => setEnablePersonaTool(event.target.checked)} />
+      <FormHelperText sx={_styleHelperText}>Coming soon</FormHelperText>
+      {/*<FormHelperText sx={_styleHelperText}>Enable loading URLs by Personas</FormHelperText>*/}
     </FormControl>
-
-    {/*<FormControl disabled>*/}
-    {/*  <Checkbox variant='outlined' label='Personas' checked={inPersonas} onChange={(event) => setEnablePersonaTool(event.target.checked)} />*/}
-    {/*  <FormHelperText>Enable loading URLs by Personas</FormHelperText>*/}
-    {/*</FormControl>*/}
 
   </>;
 }
