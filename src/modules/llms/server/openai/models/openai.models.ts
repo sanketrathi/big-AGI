@@ -1,238 +1,48 @@
 import type { OpenAIWire_API_Models_List } from '~/modules/aix/server/dispatch/wiretypes/openai.wiretypes';
 
-import { LLM_IF_HOTFIX_NoStream, LLM_IF_HOTFIX_StripImages, LLM_IF_HOTFIX_Sys0ToUsr0, LLM_IF_OAI_Chat, LLM_IF_OAI_Complete, LLM_IF_OAI_Fn, LLM_IF_OAI_Json, LLM_IF_OAI_NeedsAudio, LLM_IF_OAI_PromptCaching, LLM_IF_OAI_Realtime, LLM_IF_OAI_Reasoning, LLM_IF_OAI_Vision } from '~/common/stores/llms/llms.types';
+import { LLM_IF_HOTFIX_NoStream, LLM_IF_HOTFIX_NoTemperature, LLM_IF_HOTFIX_StripImages, LLM_IF_HOTFIX_Sys0ToUsr0, LLM_IF_OAI_Chat, LLM_IF_OAI_Complete, LLM_IF_OAI_Fn, LLM_IF_OAI_Json, LLM_IF_OAI_NeedsAudio, LLM_IF_OAI_PromptCaching, LLM_IF_OAI_Realtime, LLM_IF_OAI_Reasoning, LLM_IF_OAI_Vision } from '~/common/stores/llms/llms.types';
 
 import type { ModelDescriptionSchema } from '../../llm.server.types';
 import { fromManualMapping, ManualMappings } from './models.data';
 
 
-// [Azure] / [OpenAI]
+// [OpenAI] Known Chat Models
 // https://platform.openai.com/docs/models
 export const _knownOpenAIChatModels: ManualMappings = [
 
-  // GPT-4o
-  {
-    idPrefix: 'gpt-4o',
-    label: 'GPT-4o',
-    description: 'High-intelligence flagship model for complex, multi-step tasks. GPT-4o is cheaper and faster than GPT-4 Turbo. Currently points to gpt-4o-2024-08-06.',
-    symLink: 'gpt-4o-2024-08-06',
-    hidden: true,
-    // copied from symlinked
-    contextWindow: 128000,
-    maxCompletionTokens: 16384,
-    trainingDataCutoff: 'Oct 2023',
-    interfaces: [LLM_IF_OAI_Chat, LLM_IF_OAI_Vision, LLM_IF_OAI_Fn, LLM_IF_OAI_Json, LLM_IF_OAI_PromptCaching],
-    chatPrice: { input: 2.5, cache: { cType: 'oai-ac', read: 1.25 }, output: 10 },
-    benchmark: { cbaElo: 1288 }, // no direct CSV match, left as-is (1286 + 2 → 1288)
-  },
-  {
-    isLatest: true,
-    idPrefix: 'gpt-4o-2024-11-20',
-    label: 'GPT-4o (2024-11-20)',
-    description: 'Latest gpt-4o snapshot from November 20th, 2024.',
-    contextWindow: 128000,
-    maxCompletionTokens: 16384,
-    trainingDataCutoff: 'Oct 2023',
-    interfaces: [LLM_IF_OAI_Chat, LLM_IF_OAI_Vision, LLM_IF_OAI_Fn, LLM_IF_OAI_Json, LLM_IF_OAI_PromptCaching], // + Structured Outputs
-    chatPrice: { input: 2.5, cache: { cType: 'oai-ac', read: 1.25 }, output: 10 },
-    benchmark: { cbaElo: 1365 },
-  },
-  {
-    idPrefix: 'gpt-4o-2024-08-06',
-    label: 'GPT-4o (2024-08-06)',
-    description: 'First snapshot that supports Structured Outputs. gpt-4o currently points to this version.',
-    contextWindow: 128000,
-    maxCompletionTokens: 16384,
-    trainingDataCutoff: 'Oct 2023',
-    interfaces: [LLM_IF_OAI_Chat, LLM_IF_OAI_Vision, LLM_IF_OAI_Fn, LLM_IF_OAI_Json, LLM_IF_OAI_PromptCaching], // + Structured Outputs
-    chatPrice: { input: 2.5, cache: { cType: 'oai-ac', read: 1.25 }, output: 10 },
-    benchmark: { cbaElo: 1265 },
-    hidden: true,
-  },
-  {
-    idPrefix: 'gpt-4o-2024-05-13',
-    label: 'GPT-4o (2024-05-13)',
-    description: 'Original gpt-4o snapshot from May 13, 2024.',
-    contextWindow: 128000,
-    maxCompletionTokens: 4096,
-    trainingDataCutoff: 'Oct 2023',
-    interfaces: [LLM_IF_OAI_Chat, LLM_IF_OAI_Vision, LLM_IF_OAI_Fn, LLM_IF_OAI_Json],
-    chatPrice: { input: 5, output: 15 },
-    benchmark: { cbaElo: 1285 },
-    hidden: true,
-  },
-  {
-    idPrefix: 'chatgpt-4o-latest',
-    label: 'ChatGPT-4o Latest',
-    description: 'The chatgpt-4o-latest model version continuously points to the version of GPT-4o used in ChatGPT, and is updated frequently, when there are significant changes.',
-    contextWindow: 128000,
-    maxCompletionTokens: 16384,
-    trainingDataCutoff: 'Oct 2023',
-    interfaces: [LLM_IF_OAI_Chat, LLM_IF_OAI_Vision, LLM_IF_OAI_Json], // does not support Tools
-    chatPrice: { input: 5, output: 15 },
-    benchmark: { cbaElo: 1377 },
-  },
+  /// [OpenAI, 2025-03-11] NEW `v1/responses` API MODELS - UNSUPPORTED YET
 
-  // GPT-4o Audio Preview
+  // Computer Use Preview - INTERNAL MODEL FOR AGENTS - UNSUPPORTED YET
   {
-    idPrefix: 'gpt-4o-audio-preview',
-    label: 'GPT-4o Audio Preview',
-    description: 'Preview release for audio inputs in chat completions.',
-    symLink: 'gpt-4o-audio-preview-2024-12-17',
-    hidden: true,
+    idPrefix: 'computer-use-preview',
+    label: 'Computer Use Preview',
+    description: 'Preview release for computer interaction capabilities. Points to computer-use-preview-2025-03-11.',
+    symLink: 'computer-use-preview-2025-03-11',
+    hidden: true, // we prefer versioned models to symlinked
     // copied from symlinked
-    contextWindow: 128000,
-    maxCompletionTokens: 16384,
-    trainingDataCutoff: 'Oct 2023',
-    interfaces: [LLM_IF_OAI_NeedsAudio],
-    chatPrice: { input: 2.5, output: 10 /* TODO: AUDIO 100/200 */ },
+    contextWindow: 8192,
+    maxCompletionTokens: 1024,
+    trainingDataCutoff: 'Sep 30, 2023',
+    interfaces: [/* not actually a CHAT API model - this is here temporarily for debugging, before moving to /responses */],
+    chatPrice: { input: 3, output: 12 },
     isPreview: true,
   },
   {
-    idPrefix: 'gpt-4o-audio-preview-2024-12-17',
-    label: 'GPT-4o Audio Preview (2024-12-17)',
-    description: 'Snapshot for the Audio API model.',
-    contextWindow: 128000,
-    maxCompletionTokens: 16384,
-    trainingDataCutoff: 'Oct 2023',
-    interfaces: [LLM_IF_OAI_NeedsAudio],
-    chatPrice: { input: 2.5, output: 10 /* TODO: AUDIO 40/80 */ },
+    hidden: true, // UNSUPPORTED YET
+    // isLatest: true, // preview doesn't get highlighted
+    idPrefix: 'computer-use-preview-2025-03-11',
+    label: 'Computer Use Preview (2025-03-11)',
+    description: 'Specialized model for computer use tool. Optimized for computer interaction capabilities.',
+    contextWindow: 8192,
+    maxCompletionTokens: 1024,
+    trainingDataCutoff: 'Sep 30, 2023',
+    interfaces: [/* not actually a CHAT API model - this is here temporarily for debugging, before moving to /responses */],
+    chatPrice: { input: 3, output: 12 },
     isPreview: true,
-    hidden: true,
-  },
-  {
-    idPrefix: 'gpt-4o-audio-preview-2024-10-01',
-    label: 'GPT-4o Audio Preview (2024-10-01)',
-    description: 'Current snapshot for the Audio API model.',
-    contextWindow: 128000,
-    maxCompletionTokens: 16384,
-    trainingDataCutoff: 'Oct 2023',
-    interfaces: [LLM_IF_OAI_NeedsAudio],
-    chatPrice: { input: 2.5, output: 10 /* TODO: AUDIO 100/200 */ },
-    isPreview: true,
-    hidden: true,
-  },
-
-  // GPT-4o Realtime Preview
-  {
-    idPrefix: 'gpt-4o-realtime-preview',
-    label: 'GPT-4o Realtime Preview',
-    description: 'Preview release for the Realtime API. Points to the latest snapshot of GPT-4o Realtime Preview model: gpt-4o-realtime-preview-2024-12-17.',
-    symLink: 'gpt-4o-realtime-preview-2024-12-17',
-    hidden: true,
-    // copied from symlinked
-    contextWindow: 128000,
-    maxCompletionTokens: 4096,
-    trainingDataCutoff: 'Oct 2023',
-    interfaces: [LLM_IF_OAI_Realtime /* TBA FC, AUDIO */],
-    chatPrice: { input: 5, cache: { cType: 'oai-ac', read: 2.5 }, output: 20 /* TODO: AUDIO 100/200 */ },
-    isPreview: true,
-  },
-  {
-    idPrefix: 'gpt-4o-realtime-preview-2024-12-17',
-    label: 'GPT-4o Realtime Preview (2024-12-17)',
-    description: 'Snapshot for the Realtime API model. Supports low-latency, multimodal experiences including speech-to-speech capabilities.',
-    contextWindow: 128000,
-    maxCompletionTokens: 4096,
-    trainingDataCutoff: 'Oct 2023',
-    interfaces: [LLM_IF_OAI_Realtime],
-    chatPrice: { input: 5, cache: { cType: 'oai-ac', read: 2.5 }, output: 20 },
-    isPreview: true,
-    hidden: true,
-  },
-  {
-    idPrefix: 'gpt-4o-realtime-preview-2024-10-01',
-    label: 'GPT-4o Realtime Preview (2024-10-01)',
-    description: 'Current snapshot for the Realtime API model. Supports low-latency, multimodal experiences including speech-to-speech capabilities.',
-    contextWindow: 128000,
-    maxCompletionTokens: 4096,
-    trainingDataCutoff: 'Oct 2023',
-    interfaces: [LLM_IF_OAI_Realtime /* TBA FC, AUDIO */],
-    chatPrice: { input: 5, cache: { cType: 'oai-ac', read: 2.5 }, output: 20 /* TODO: AUDIO 100/200 */ },
-    isPreview: true,
-    hidden: true,
   },
 
 
-  // GPT-4o mini
-  {
-    idPrefix: 'gpt-4o-mini',
-    label: 'GPT-4o mini',
-    description: 'gpt-4o-mini currently points to this version.',
-    symLink: 'gpt-4o-mini-2024-07-18',
-    hidden: true,
-    // copied from symlinked
-    contextWindow: 128000,
-    maxCompletionTokens: 16384,
-    trainingDataCutoff: 'Oct 2023',
-    interfaces: [LLM_IF_OAI_Chat, LLM_IF_OAI_Vision, LLM_IF_OAI_Fn, LLM_IF_OAI_Json, LLM_IF_OAI_PromptCaching],
-    chatPrice: { input: 0.15, cache: { cType: 'oai-ac', read: 0.075 }, output: 0.6 },
-    benchmark: { cbaElo: 1273 },
-  },
-  {
-    idPrefix: 'gpt-4o-mini-2024-07-18',
-    label: 'GPT-4o Mini (2024-07-18)',
-    description: 'Affordable model for fast, lightweight tasks. GPT-4o Mini is cheaper and more capable than GPT-3.5 Turbo.',
-    contextWindow: 128000,
-    maxCompletionTokens: 16384,
-    trainingDataCutoff: 'Oct 2023',
-    interfaces: [LLM_IF_OAI_Chat, LLM_IF_OAI_Vision, LLM_IF_OAI_Fn, LLM_IF_OAI_Json, LLM_IF_OAI_PromptCaching],
-    chatPrice: { input: 0.15, cache: { cType: 'oai-ac', read: 0.075 }, output: 0.6 },
-    benchmark: { cbaElo: 1273 },
-  },
-  {
-    idPrefix: 'gpt-4o-mini-audio-preview',
-    label: 'GPT-4o Mini Audio Preview',
-    description: 'Preview release for audio inputs in chat completions.',
-    symLink: 'gpt-4o-mini-audio-preview-2024-12-17',
-    hidden: true,
-    // copied from symlinked
-    contextWindow: 128000,
-    maxCompletionTokens: 16384,
-    trainingDataCutoff: 'Oct 2023',
-    interfaces: [LLM_IF_OAI_NeedsAudio],
-    chatPrice: { input: 0.15, output: 0.6 /* TODO: AUDIO 10/20 */ },
-    isPreview: true,
-  },
-  {
-    idPrefix: 'gpt-4o-mini-audio-preview-2024-12-17',
-    label: 'GPT-4o Mini Audio Preview (2024-12-17)',
-    description: 'Snapshot for the Audio API model.',
-    contextWindow: 128000,
-    maxCompletionTokens: 16384,
-    trainingDataCutoff: 'Oct 2023',
-    interfaces: [LLM_IF_OAI_NeedsAudio],
-    chatPrice: { input: 0.15, output: 0.6 /* TODO: AUDIO 10/20 */ },
-    isPreview: true,
-    hidden: true,
-  },
-  {
-    idPrefix: 'gpt-4o-mini-realtime-preview',
-    label: 'GPT-4o Mini Realtime Preview',
-    description: 'Preview release for the Realtime API. Points to the latest snapshot of GPT-4o Mini Realtime Preview model: gpt-4o-mini-realtime-preview-2024-12-17.',
-    symLink: 'gpt-4o-mini-realtime-preview-2024-12-17',
-    hidden: true,
-    // copied from symlinked
-    contextWindow: 128000,
-    maxCompletionTokens: 4096,
-    trainingDataCutoff: 'Oct 2023',
-    interfaces: [LLM_IF_OAI_Realtime],
-    chatPrice: { input: 0.6, cache: { cType: 'oai-ac', read: 0.3 }, output: 2.4 },
-    isPreview: true,
-  },
-  {
-    idPrefix: 'gpt-4o-mini-realtime-preview-2024-12-17',
-    label: 'GPT-4o Mini Realtime Preview (2024-12-17)',
-    description: 'Snapshot for the Realtime API model. Supports low-latency, multimodal experiences including speech-to-speech capabilities.',
-    contextWindow: 128000,
-    maxCompletionTokens: 4096,
-    trainingDataCutoff: 'Oct 2023',
-    interfaces: [LLM_IF_OAI_Realtime],
-    chatPrice: { input: 0.6, cache: { cType: 'oai-ac', read: 0.3 }, output: 2.4 },
-    isPreview: true,
-    hidden: true,
-  },
-
+  /// Reasoning models
 
   // o3-mini
   {
@@ -262,6 +72,35 @@ export const _knownOpenAIChatModels: ManualMappings = [
     parameterSpecs: [{ paramId: 'llmVndOaiReasoningEffort' }, { paramId: 'llmVndOaiRestoreMarkdown' }],
     chatPrice: { input: 1.1, cache: { cType: 'oai-ac', read: 0.55 }, output: 4.4 },
     benchmark: { cbaElo: 1307 },
+  },
+
+  // o1-pro - (v1/responses API - UNSUPPORTED YET) 💎💰
+  {
+    idPrefix: 'o1-pro',
+    label: 'o1 Pro',
+    description: 'Version of o1 with more compute for better responses. Points to o1-pro-2025-03-19.',
+    symLink: 'o1-pro-2025-03-19',
+    hidden: true,
+    // copied from symlinked
+    contextWindow: 200000,
+    maxCompletionTokens: 100000,
+    trainingDataCutoff: 'Sep 30, 2023',
+    interfaces: [LLM_IF_OAI_Chat, LLM_IF_OAI_Fn, LLM_IF_OAI_Json, LLM_IF_OAI_Vision, LLM_IF_OAI_Reasoning, LLM_IF_HOTFIX_NoStream],
+    parameterSpecs: [{ paramId: 'llmVndOaiReasoningEffort' }, { paramId: 'llmVndOaiRestoreMarkdown' }],
+    chatPrice: { input: 150, output: 600 },
+  },
+  {
+    hidden: true, // unsuported yet
+    // isLatest: true,
+    idPrefix: 'o1-pro-2025-03-19',
+    label: 'o1 Pro (2025-03-19)',
+    description: 'A version of o1 with more compute for better responses. Provides consistently better answers for complex tasks.',
+    contextWindow: 200000,
+    maxCompletionTokens: 100000,
+    trainingDataCutoff: 'Sep 30, 2023',
+    interfaces: [LLM_IF_OAI_Chat, LLM_IF_OAI_Fn, LLM_IF_OAI_Json, LLM_IF_OAI_Vision, LLM_IF_OAI_Reasoning, LLM_IF_HOTFIX_NoStream],
+    parameterSpecs: [{ paramId: 'llmVndOaiReasoningEffort' }, { paramId: 'llmVndOaiRestoreMarkdown' }],
+    chatPrice: { input: 150, output: 600 },
   },
 
   // o1
@@ -348,6 +187,319 @@ export const _knownOpenAIChatModels: ManualMappings = [
     interfaces: [LLM_IF_OAI_Chat, LLM_IF_OAI_Reasoning, LLM_IF_OAI_PromptCaching, LLM_IF_HOTFIX_StripImages, LLM_IF_HOTFIX_Sys0ToUsr0],
     chatPrice: { input: 1.1, cache: { cType: 'oai-ac', read: 0.55 }, output: 4.4 },
     benchmark: { cbaElo: 1304 },
+  },
+
+
+  /// `v1/chat/completions` Models
+
+  // GPT-4.5-Preview
+  {
+    idPrefix: 'gpt-4.5-preview',
+    label: 'GPT-4.5 Preview',
+    description: 'Largest GPT model, good for creative tasks and agentic planning. Currently points to gpt-4.5-preview-2025-02-27.',
+    symLink: 'gpt-4.5-preview-2025-02-27',
+    hidden: true,
+    // copied from symlinked
+    contextWindow: 128000,
+    maxCompletionTokens: 16384,
+    trainingDataCutoff: 'Oct 2023',
+    interfaces: [LLM_IF_OAI_Chat, LLM_IF_OAI_Vision, LLM_IF_OAI_Fn, LLM_IF_OAI_Json, LLM_IF_OAI_PromptCaching],
+    chatPrice: { input: 75, cache: { cType: 'oai-ac', read: 37.5 }, output: 150 },
+  },
+  {
+    isLatest: true,
+    idPrefix: 'gpt-4.5-preview-2025-02-27',
+    label: 'GPT-4.5 Preview (2025-02-27)',
+    description: 'Research preview of GPT-4.5, our largest and most capable GPT model yet. Deep world knowledge and better understanding of user intent makes it good at creative tasks and agentic planning.',
+    contextWindow: 128000,
+    maxCompletionTokens: 16384,
+    trainingDataCutoff: 'Oct 2023',
+    interfaces: [LLM_IF_OAI_Chat, LLM_IF_OAI_Vision, LLM_IF_OAI_Fn, LLM_IF_OAI_Json, LLM_IF_OAI_PromptCaching],
+    chatPrice: { input: 75, cache: { cType: 'oai-ac', read: 37.5 }, output: 150 },
+    isPreview: true,
+  },
+
+  // GPT-4o
+  {
+    idPrefix: 'gpt-4o',
+    label: 'GPT-4o',
+    description: 'High-intelligence flagship model. Currently points to gpt-4o-2024-08-06.',
+    symLink: 'gpt-4o-2024-08-06',
+    hidden: true,
+    // copied from symlinked
+    contextWindow: 128000,
+    maxCompletionTokens: 16384,
+    trainingDataCutoff: 'Oct 2023',
+    interfaces: [LLM_IF_OAI_Chat, LLM_IF_OAI_Vision, LLM_IF_OAI_Fn, LLM_IF_OAI_Json, LLM_IF_OAI_PromptCaching],
+    chatPrice: { input: 2.5, cache: { cType: 'oai-ac', read: 1.25 }, output: 10 },
+    benchmark: { cbaElo: 1288 }, // no direct CSV match, left as-is (1286 + 2 → 1288)
+  },
+  {
+    isLatest: true,
+    idPrefix: 'gpt-4o-2024-11-20',
+    label: 'GPT-4o (2024-11-20)',
+    description: 'Snapshot of gpt-4o from November 20th, 2024.',
+    contextWindow: 128000,
+    maxCompletionTokens: 16384,
+    trainingDataCutoff: 'Oct 2023',
+    interfaces: [LLM_IF_OAI_Chat, LLM_IF_OAI_Vision, LLM_IF_OAI_Fn, LLM_IF_OAI_Json, LLM_IF_OAI_PromptCaching], // + Structured Outputs
+    chatPrice: { input: 2.5, cache: { cType: 'oai-ac', read: 1.25 }, output: 10 },
+    benchmark: { cbaElo: 1365 },
+  },
+  {
+    idPrefix: 'gpt-4o-2024-08-06',
+    label: 'GPT-4o (2024-08-06)',
+    description: 'Snapshot that supports Structured Outputs. gpt-4o currently points to this version.',
+    contextWindow: 128000,
+    maxCompletionTokens: 16384,
+    trainingDataCutoff: 'Oct 2023',
+    interfaces: [LLM_IF_OAI_Chat, LLM_IF_OAI_Vision, LLM_IF_OAI_Fn, LLM_IF_OAI_Json, LLM_IF_OAI_PromptCaching], // + Structured Outputs
+    chatPrice: { input: 2.5, cache: { cType: 'oai-ac', read: 1.25 }, output: 10 },
+    benchmark: { cbaElo: 1265 },
+    hidden: true,
+  },
+  {
+    idPrefix: 'gpt-4o-2024-05-13',
+    label: 'GPT-4o (2024-05-13)',
+    description: 'Original gpt-4o snapshot from May 13, 2024.',
+    contextWindow: 128000,
+    maxCompletionTokens: 4096,
+    trainingDataCutoff: 'Oct 2023',
+    interfaces: [LLM_IF_OAI_Chat, LLM_IF_OAI_Vision, LLM_IF_OAI_Fn, LLM_IF_OAI_Json],
+    chatPrice: { input: 5, output: 15 },
+    benchmark: { cbaElo: 1285 },
+    hidden: true,
+  },
+  {
+    idPrefix: 'chatgpt-4o-latest',
+    label: 'ChatGPT-4o Latest',
+    description: 'The chatgpt-4o-latest model version continuously points to the version of GPT-4o used in ChatGPT, and is updated frequently.',
+    contextWindow: 128000,
+    maxCompletionTokens: 16384,
+    trainingDataCutoff: 'Oct 2023',
+    interfaces: [LLM_IF_OAI_Chat, LLM_IF_OAI_Vision, LLM_IF_OAI_Json], // does not support Tools
+    chatPrice: { input: 5, output: 15 },
+    benchmark: { cbaElo: 1377 },
+  },
+
+  // GPT-4o Search Preview: When using Chat Completions, the model always retrieves information from the web before responding to your query.
+  {
+    idPrefix: 'gpt-4o-search-preview',
+    label: 'GPT-4o Search Preview 🌐',
+    description: 'GPT model for web search in Chat Completions. Currently points to gpt-4o-search-preview-2025-03-11.',
+    symLink: 'gpt-4o-search-preview-2025-03-11',
+    hidden: true,
+    // copied from symlinked
+    contextWindow: 128000,
+    maxCompletionTokens: 16384,
+    trainingDataCutoff: 'Sep 30, 2023',
+    interfaces: [LLM_IF_OAI_Chat, LLM_IF_OAI_Json, LLM_IF_HOTFIX_NoTemperature], // NOTE: 2025-03-15: confirmed on 'playground' that this model does not support images
+    parameterSpecs: [{ paramId: 'llmVndOaiWebSearchContext' }, { paramId: 'llmVndOaiWebSearchGeolocation' }],
+    chatPrice: { input: 2.5, output: 10 },
+    isPreview: true,
+  },
+  {
+    // isLatest: true, // preview doesn't get highlighted
+    idPrefix: 'gpt-4o-search-preview-2025-03-11',
+    label: 'GPT-4o Search Preview (2025-03-11) 🌐',
+    description: 'Latest snapshot of the GPT-4o model optimized for web search capabilities.',
+    contextWindow: 128000,
+    maxCompletionTokens: 16384,
+    trainingDataCutoff: 'Sep 30, 2023',
+    interfaces: [LLM_IF_OAI_Chat, LLM_IF_OAI_Json, LLM_IF_HOTFIX_NoTemperature], // NOTE: 2025-03-15: confirmed on 'playground' that this model does not support images
+    parameterSpecs: [{ paramId: 'llmVndOaiWebSearchContext' }, { paramId: 'llmVndOaiWebSearchGeolocation' }],
+    chatPrice: { input: 2.5, output: 10 },
+    isPreview: true,
+  },
+
+  // GPT-4o Audio Preview
+  {
+    idPrefix: 'gpt-4o-audio-preview',
+    label: 'GPT-4o Audio Preview',
+    description: 'Preview release for audio inputs in chat completions.',
+    symLink: 'gpt-4o-audio-preview-2024-12-17',
+    hidden: true,
+    // copied from symlinked
+    contextWindow: 128000,
+    maxCompletionTokens: 16384,
+    trainingDataCutoff: 'Oct 2023',
+    interfaces: [LLM_IF_OAI_NeedsAudio],
+    chatPrice: { input: 2.5, output: 10 /* AUDIO PRICING UNSUPPORTED 40/80 */ },
+    isPreview: true,
+  },
+  {
+    idPrefix: 'gpt-4o-audio-preview-2024-12-17',
+    label: 'GPT-4o Audio Preview (2024-12-17)',
+    description: 'Snapshot for the Audio API model.',
+    contextWindow: 128000,
+    maxCompletionTokens: 16384,
+    trainingDataCutoff: 'Oct 2023',
+    interfaces: [LLM_IF_OAI_NeedsAudio],
+    chatPrice: { input: 2.5, output: 10 /* AUDIO PRICING UNSUPPORTED 40/80 */ },
+    isPreview: true,
+    hidden: true,
+  },
+  {
+    idPrefix: 'gpt-4o-audio-preview-2024-10-01',
+    label: 'GPT-4o Audio Preview (2024-10-01)',
+    description: 'Snapshot for the Audio API model.',
+    contextWindow: 128000,
+    maxCompletionTokens: 16384,
+    trainingDataCutoff: 'Oct 2023',
+    interfaces: [LLM_IF_OAI_NeedsAudio],
+    chatPrice: { input: 2.5, output: 10 /* AUDIO PRICING UNSUPPORTED IS 40/80 */ },
+    isPreview: true,
+    hidden: true,
+  },
+
+  // GPT-4o Realtime Preview
+  {
+    idPrefix: 'gpt-4o-realtime-preview',
+    label: 'GPT-4o Realtime Preview',
+    description: 'Preview release for the Realtime API. Points to: gpt-4o-realtime-preview-2024-12-17.',
+    symLink: 'gpt-4o-realtime-preview-2024-12-17',
+    hidden: true,
+    // copied from symlinked
+    contextWindow: 128000,
+    maxCompletionTokens: 4096,
+    trainingDataCutoff: 'Oct 2023',
+    interfaces: [LLM_IF_OAI_Realtime /* TBA FC, AUDIO */],
+    chatPrice: { input: 5, cache: { cType: 'oai-ac', read: 2.5 }, output: 20 /* AUDIO PRICING UNSUPPORTED 40/80 */ },
+    isPreview: true,
+  },
+  {
+    idPrefix: 'gpt-4o-realtime-preview-2024-12-17',
+    label: 'GPT-4o Realtime Preview (2024-12-17)',
+    description: 'Snapshot for the Realtime API model.',
+    contextWindow: 128000,
+    maxCompletionTokens: 4096,
+    trainingDataCutoff: 'Oct 2023',
+    interfaces: [LLM_IF_OAI_Realtime],
+    chatPrice: { input: 5, cache: { cType: 'oai-ac', read: 2.5 }, output: 20 /* AUDIO PRICING UNSUPPORTED 40/80 */ },
+    isPreview: true,
+    hidden: true,
+  },
+  {
+    idPrefix: 'gpt-4o-realtime-preview-2024-10-01',
+    label: 'GPT-4o Realtime Preview (2024-10-01)',
+    description: 'Snapshot for the Realtime API model.',
+    contextWindow: 128000,
+    maxCompletionTokens: 4096,
+    trainingDataCutoff: 'Oct 2023',
+    interfaces: [LLM_IF_OAI_Realtime /* TBA FC, AUDIO */],
+    chatPrice: { input: 5, cache: { cType: 'oai-ac', read: 2.5 }, output: 20 /* AUDIO PRICING UNSUPPORTED 40/80 */ },
+    isPreview: true,
+    hidden: true,
+  },
+
+
+  // GPT-4o mini
+  {
+    idPrefix: 'gpt-4o-mini',
+    label: 'GPT-4o mini',
+    description: 'gpt-4o-mini currently points to this version.',
+    symLink: 'gpt-4o-mini-2024-07-18',
+    hidden: true,
+    // copied from symlinked
+    contextWindow: 128000,
+    maxCompletionTokens: 16384,
+    trainingDataCutoff: 'Oct 2023',
+    interfaces: [LLM_IF_OAI_Chat, LLM_IF_OAI_Vision, LLM_IF_OAI_Fn, LLM_IF_OAI_Json, LLM_IF_OAI_PromptCaching],
+    chatPrice: { input: 0.15, cache: { cType: 'oai-ac', read: 0.075 }, output: 0.6 },
+    benchmark: { cbaElo: 1273 },
+  },
+  {
+    idPrefix: 'gpt-4o-mini-2024-07-18',
+    label: 'GPT-4o Mini (2024-07-18)',
+    description: 'Affordable model for fast, lightweight tasks. GPT-4o Mini is cheaper and more capable than GPT-3.5 Turbo.',
+    contextWindow: 128000,
+    maxCompletionTokens: 16384,
+    trainingDataCutoff: 'Oct 2023',
+    interfaces: [LLM_IF_OAI_Chat, LLM_IF_OAI_Vision, LLM_IF_OAI_Fn, LLM_IF_OAI_Json, LLM_IF_OAI_PromptCaching],
+    chatPrice: { input: 0.15, cache: { cType: 'oai-ac', read: 0.075 }, output: 0.6 },
+    benchmark: { cbaElo: 1273 },
+  },
+  {
+    idPrefix: 'gpt-4o-mini-audio-preview',
+    label: 'GPT-4o Mini Audio Preview',
+    description: 'Preview release for audio inputs in chat completions.',
+    symLink: 'gpt-4o-mini-audio-preview-2024-12-17',
+    hidden: true,
+    // copied from symlinked
+    contextWindow: 128000,
+    maxCompletionTokens: 16384,
+    trainingDataCutoff: 'Oct 2023',
+    interfaces: [LLM_IF_OAI_NeedsAudio],
+    chatPrice: { input: 0.15, output: 0.6 /* AUDIO PRICING UNSUPPORTED 10/20 */ },
+    isPreview: true,
+  },
+  {
+    idPrefix: 'gpt-4o-mini-audio-preview-2024-12-17',
+    label: 'GPT-4o Mini Audio Preview (2024-12-17)',
+    description: 'Snapshot for the Audio API model.',
+    contextWindow: 128000,
+    maxCompletionTokens: 16384,
+    trainingDataCutoff: 'Oct 2023',
+    interfaces: [LLM_IF_OAI_NeedsAudio],
+    chatPrice: { input: 0.15, output: 0.6 /* AUDIO PRICING UNSUPPORTED 10/20 */ },
+    isPreview: true,
+    hidden: true,
+  },
+  {
+    idPrefix: 'gpt-4o-mini-realtime-preview',
+    label: 'GPT-4o Mini Realtime Preview',
+    description: 'Preview release for the Realtime API. Points to: gpt-4o-mini-realtime-preview-2024-12-17.',
+    symLink: 'gpt-4o-mini-realtime-preview-2024-12-17',
+    hidden: true,
+    // copied from symlinked
+    contextWindow: 128000,
+    maxCompletionTokens: 4096,
+    trainingDataCutoff: 'Oct 2023',
+    interfaces: [LLM_IF_OAI_Realtime],
+    chatPrice: { input: 0.6, cache: { cType: 'oai-ac', read: 0.3 }, output: 2.4 },
+    isPreview: true,
+  },
+  {
+    idPrefix: 'gpt-4o-mini-realtime-preview-2024-12-17',
+    label: 'GPT-4o Mini Realtime Preview (2024-12-17)',
+    description: 'Snapshot for the Realtime API model.',
+    contextWindow: 128000,
+    maxCompletionTokens: 4096,
+    trainingDataCutoff: 'Oct 2023',
+    interfaces: [LLM_IF_OAI_Realtime],
+    chatPrice: { input: 0.6, cache: { cType: 'oai-ac', read: 0.3 }, output: 2.4 },
+    isPreview: true,
+    hidden: true,
+  },
+
+  // GPT-4o Mini Search Preview: When using Chat Completions, the model always retrieves information from the web before responding to your query.
+  {
+    idPrefix: 'gpt-4o-mini-search-preview',
+    label: 'GPT-4o Mini Search Preview 🌐',
+    description: 'Fast, affordable small model for web search. Currently points to gpt-4o-mini-search-preview-2025-03-11.',
+    symLink: 'gpt-4o-mini-search-preview-2025-03-11',
+    hidden: true,
+    // copied from symlinked
+    contextWindow: 128000,
+    maxCompletionTokens: 16384,
+    trainingDataCutoff: 'Sep 30, 2023',
+    interfaces: [LLM_IF_OAI_Chat, LLM_IF_OAI_Json, LLM_IF_HOTFIX_NoTemperature], // NOTE: this support function calling, but only its own, not a Custom Function
+    parameterSpecs: [{ paramId: 'llmVndOaiWebSearchContext' }, { paramId: 'llmVndOaiWebSearchGeolocation' }],
+    chatPrice: { input: 0.15, output: 0.6 },
+    isPreview: true,
+  },
+  {
+    // isLatest: true, // preview doesn't get highlighted
+    idPrefix: 'gpt-4o-mini-search-preview-2025-03-11',
+    label: 'GPT-4o Mini Search Preview (2025-03-11) 🌐',
+    description: 'Latest snapshot of the GPT-4o Mini model optimized for web search capabilities.',
+    contextWindow: 128000,
+    maxCompletionTokens: 16384,
+    trainingDataCutoff: 'Sep 30, 2023',
+    interfaces: [LLM_IF_OAI_Chat, LLM_IF_OAI_Json, LLM_IF_HOTFIX_NoTemperature], // NOTE: this support function calling, but only its own, not a Custom Function
+    parameterSpecs: [{ paramId: 'llmVndOaiWebSearchContext' }, { paramId: 'llmVndOaiWebSearchGeolocation' }],
+    chatPrice: { input: 0.15, output: 0.6 },
+    isPreview: true,
   },
 
 
@@ -548,7 +700,7 @@ export const _knownOpenAIChatModels: ManualMappings = [
   },
 
 
-  // Azure variants - because someone forgot the dot
+  // [Azure] variants: Azure names these differently compared to OpenAI (no dots) - also: obsolete
   {
     idPrefix: 'gpt-35-turbo-16k',
     label: '3.5-Turbo 16k',
@@ -580,6 +732,9 @@ export const _knownOpenAIChatModels: ManualMappings = [
 ];
 
 const openAIModelsDenyList: string[] = [
+  // [OpenAI, 2025-03-11] FIXME: NOT YET SUPPORTED - "RESPONSES API"
+  // 'computer-use-preview', 'computer-use-preview-2025-03-11',
+
   // Legacy GPT models
   'gpt-3.5-turbo-0301',
   'gpt-3.5-turbo-0613',
@@ -618,15 +773,32 @@ export function openAIModelToModelDescription(modelId: string, modelCreated: num
 
 
 const _manualOrderingIdPrefixes = [
+  // Computer use models
+  'computer-use-20',
+  'computer-use-preview',
   // Reasoning models
   'o3-20',
   'o3-mini-',
+  'o3-',
+  'o1-pro-20',
+  'o1-pro',
   'o1-20',
   'o1-preview-',
   'o1-mini-',
+  'o1-',
+  // GPT-4.5
+  'gpt-4.5-20',
+  'gpt-4.5-preview',
+  'gpt-4.5-',
   // Preferred models
   'gpt-4o-20',
-  'gpt-4o-mini-',
+  'gpt-4o-search-20',
+  'gpt-4o-search-preview',
+  'gpt-4o-mini-20',
+  'gpt-4o-mini-search-20',
+  'gpt-4o-mini-search-preview',
+  'gpt-4o-mini',
+  'gpt-4o-',
   // ChatGPT models
   'chatgpt-',
   // ...rest
@@ -689,13 +861,4 @@ export function openAISortModels(a: ModelDescriptionSchema, b: ModelDescriptionS
   //   return aCount - bCount;
   // }
   // return bId.localeCompare(aId);
-}
-
-
-// [Azure]
-
-export function azureModelToModelDescription(azureDeploymentRef: string, openAIModelIdBase: string, modelCreated: number, modelUpdated?: number): ModelDescriptionSchema {
-  // if the deployment name mataches an OpenAI model prefix, use that
-  const known = _knownOpenAIChatModels.find(base => azureDeploymentRef == base.idPrefix);
-  return fromManualMapping(_knownOpenAIChatModels, known ? azureDeploymentRef : openAIModelIdBase, modelCreated, modelUpdated, undefined, true);
 }
