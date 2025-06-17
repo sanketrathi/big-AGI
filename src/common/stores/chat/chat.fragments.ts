@@ -1,4 +1,4 @@
-import type { DBlobAssetId } from '~/modules/dblobs/dblobs.types';
+import type { DBlobAssetId } from '~/common/stores/blob/dblobs-portability';
 
 import type { LiveFileId } from '~/common/livefile/liveFile.types';
 import { agiId } from '~/common/util/idUtils';
@@ -198,16 +198,16 @@ export type DMessageDataRef =
 
 /// Helpers - Fragment Type Guards - (we don't need 'fragment is X' since TypeScript 5.5.2)
 
-export function isContentFragment(fragment: DMessageFragment) {
-  return fragment.ft === 'content';
+export function isContentFragment(fragment: DMessageFragment): fragment is DMessageContentFragment {
+  return fragment.ft === 'content' && !!fragment.part?.pt;
 }
 
 export function isTextContentFragment(fragment: DMessageFragment): fragment is DMessageContentFragment & { part: DMessageTextPart } {
   return fragment.ft === 'content' && fragment.part.pt === 'text';
 }
 
-export function isAttachmentFragment(fragment: DMessageFragment) {
-  return fragment.ft === 'attachment';
+export function isAttachmentFragment(fragment: DMessageFragment): fragment is DMessageAttachmentFragment {
+  return fragment.ft === 'attachment' && !!fragment.part?.pt;
 }
 
 export function isContentOrAttachmentFragment(fragment: DMessageFragment) {
@@ -215,8 +215,8 @@ export function isContentOrAttachmentFragment(fragment: DMessageFragment) {
 }
 
 
-export function isVoidFragment(fragment: DMessageFragment) {
-  return fragment.ft === 'void';
+export function isVoidFragment(fragment: DMessageFragment): fragment is DMessageVoidFragment {
+  return fragment.ft === 'void' && !!fragment.part?.pt;
 }
 
 export function isVoidAnnotationsFragment(fragment: DMessageFragment): fragment is DMessageVoidFragment & { part: DVoidModelAnnotationsPart } {
@@ -440,7 +440,8 @@ function _create_Sentinel_Part(): _SentinelPart {
 }
 
 function _duplicate_Part<TPart extends (DMessageContentFragment | DMessageAttachmentFragment | DMessageVoidFragment)['part']>(part: TPart): TPart {
-  switch (part.pt) {
+  const pt = part.pt;
+  switch (pt) {
     case 'doc':
       const newDocVersion = Number(part.version ?? 1); // we don't increase the version on duplication (not sure we should?)
       return _create_Doc_Part(part.vdt, _duplicate_InlineData(part.data), part.ref, part.l1Title, newDocVersion, part.meta ? { ...part.meta } : undefined) as TPart;
@@ -481,6 +482,16 @@ function _duplicate_Part<TPart extends (DMessageContentFragment | DMessageAttach
 
     case '_pt_sentinel':
       return _create_Sentinel_Part() as TPart;
+
+    default:
+      const _exhaustiveCheck: never = pt;
+
+      // console.warn('[DEV] _duplicate_Part: Unknown part type, will duplicate as Error', { part });
+      // return _create_Error_Part(`Unknown part type '${(part as any)?.pt || '(undefined)'}'`) as TPart;
+
+      // unexpected case: if we are here, the best to do is probably to return a clone of the part, as returning
+      // nothing would corrupt the Fragment
+      return structuredClone(part) as TPart; // fallback to structured clone for unknown parts
   }
 }
 
@@ -561,15 +572,19 @@ export function filterDocAttachmentFragments(fragments: DMessageAttachmentFragme
  * Updates a fragment with the edited text, ensuring the fragment retains its type and structure.
  * @returns A new fragment with the edited text applied or null if the fragment type isn't handled.
  */
+export function updateFragmentWithEditedText(fragment: DMessageContentFragment, editedText: string): DMessageContentFragment | null;
+export function updateFragmentWithEditedText(fragment: DMessageAttachmentFragment, editedText: string): DMessageAttachmentFragment | null;
+export function updateFragmentWithEditedText(fragment: DMessageFragment, editedText: string): DMessageFragment | null;
 export function updateFragmentWithEditedText(
   fragment: DMessageFragment,
   editedText: string,
 ): DMessageFragment | null {
 
-  if (editedText.length === 0) {
-    // If the edited text is empty, we may choose to delete the fragment (depending on the caller's logic)
-    return null;
-  }
+  // NOTE: we transfer the responsibility of this to the caller
+  // if (editedText.length === 0) {
+  //   // If the edited text is empty, we may choose to delete the fragment (depending on the caller's logic)
+  //   return null;
+  // }
 
   if (isContentFragment(fragment)) {
     const { fId, part } = fragment;
