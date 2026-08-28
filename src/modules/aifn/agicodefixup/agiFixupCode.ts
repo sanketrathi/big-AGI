@@ -1,7 +1,7 @@
 import * as z from 'zod/v4';
 
 import type { AixAPIChatGenerate_Request } from '~/modules/aix/server/api/aix.wiretypes';
-import { aixChatGenerateContent_DMessage, aixCreateChatGenerateContext } from '~/modules/aix/client/aix.client';
+import { aixChatGenerateContent_DMessage_orThrow, aixCreateChatGenerateContext } from '~/modules/aix/client/aix.client';
 import { aixCGR_FromSimpleText } from '~/modules/aix/client/aix.client.chatGenerateRequest';
 import { aixFunctionCallTool, aixRequireSingleFunctionCallInvocation } from '~/modules/aix/client/aix.client.fromSimpleFunction';
 
@@ -57,12 +57,15 @@ export async function agiFixupCode(issueType: CodeFixType, codeToFix: string, er
       }),
     ],
     toolsPolicy:
-      config.functionPolicy === 'invoke' ? { type: 'function_call', function_call: { name: config.functionName } }
+      // 'invoke' used to force the named tool, DISABLED 2026-07-17 (see ToolsPolicy_schema): with our single tool,
+      // 'any' is equivalent and doesn't 400 on vendors that reject named forcing (Fable/Mythos 5, thinking Kimi)
+      // config.functionPolicy === 'invoke' ? { type: 'function_call', function_call: { name: config.functionName } }
+      config.functionPolicy === 'invoke' ? { type: 'any' }
         : config.functionPolicy === 'think-then-invoke' ? { type: 'auto' } : undefined,
   };
 
   // Invoke the AI model
-  const { fragments } = await aixChatGenerateContent_DMessage(
+  const { fragments } = await aixChatGenerateContent_DMessage_orThrow(
     llmId,
     aixRequest,
     aixCreateChatGenerateContext('fixup-code', '_DEV_'),

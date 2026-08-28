@@ -1,4 +1,4 @@
-import { maybeDebuggerBreak, serializeError } from '~/common/util/errorUtils';
+import { isAbortErrorLike, maybeDebuggerBreak, serializeError } from '~/common/util/errorUtils';
 import { posthogCaptureException } from '~/common/components/3rdparty/PostHogAnalytics';
 
 import type { ClientLogger, LogEntry, LogLevel, LogOptions, LogSource } from './logger.types';
@@ -31,7 +31,8 @@ class LoggerImplementation implements ClientLogger {
     this.#log('critical', message, details, source, options);
 
 
-  async executeAction(logId: string, actionId?: string): Promise<void> {
+  // arrow property: the factory forwards this detached, so it must stay bound
+  executeAction = async (logId: string, actionId?: string): Promise<void> => {
 
     const entry = this._actions.getEntry(logId);
     if (!entry?.actions?.length)
@@ -101,8 +102,8 @@ class LoggerImplementation implements ClientLogger {
       maybeDebuggerBreak();
 
     // Send error/critical logs to PostHog for monitoring
-    if ((level === 'error' || level === 'critical') && !finalOptions.skipReporting)
-      this.#sendToPostHog(level, message, originalDetails, finalSource);
+    if ((level === 'error' || level === 'critical') && !finalOptions.skipReporting && !isAbortErrorLike(originalDetails))
+      this.#sendToPostHogIfError(level, message, originalDetails, finalSource);
 
     return this._actions._addEntry({
       level,
@@ -113,7 +114,7 @@ class LoggerImplementation implements ClientLogger {
     });
   }
 
-  #sendToPostHog(level: LogLevel, message: string, originalDetails: any, finalSource: LogSource): void {
+  #sendToPostHogIfError(level: LogLevel, message: string, originalDetails: any, finalSource: LogSource): void {
     try {
       // Find actual Error objects in original details (before serialization)
       let error: Error | undefined;
@@ -121,15 +122,19 @@ class LoggerImplementation implements ClientLogger {
         error = originalDetails;
       else if (originalDetails?.error instanceof Error)
         error = originalDetails.error;
+      // If no Error object, create one with the log message so PostHog has something to track
+      // else
+      //   error = new Error(message);
 
       // Only send to PostHog if we have a real Error with stack trace
       if (error) {
         posthogCaptureException(error, {
-          $exception_domain: 'client-logger',
-          level: level,
-          source: finalSource,
-          message: message,
-          ...(originalDetails && typeof originalDetails === 'object' && !(originalDetails instanceof Error) ? originalDetails : {})
+          agi_domain: 'client-logger',
+          agi_runtime: 'browser',
+          component: finalSource,
+          severity: level,
+          log_message: message,
+          ...(originalDetails && typeof originalDetails === 'object' && !(originalDetails instanceof Error) ? originalDetails : {}),
         });
       }
     } catch (phError) {

@@ -4,8 +4,8 @@ import { Box, Chip, ColorPaletteProp, FormControl } from '@mui/joy';
 
 import type { Immutable } from '~/common/types/immutable.types';
 
-import type { FormRadioOption } from './FormRadioControl';
 import { FormLabelStart } from './FormLabelStart';
+import { FormRadioOption, optionWithTooltip } from './FormRadioControl';
 
 
 const _styles = {
@@ -18,6 +18,13 @@ const _styles = {
   chipGroup: {
     display: 'flex',
     flexWrap: 'wrap',
+    gap: 1,
+  } as const,
+
+  chipGroupEnd: {
+    display: 'flex',
+    flexWrap: 'wrap',
+    justifyContent: 'flex-end',
     gap: 1,
   } as const,
 
@@ -36,6 +43,7 @@ export const FormChipControl = <TValue extends string>(props: {
   // specific
   size?: 'sm' | 'md' | 'lg',
   color?: ColorPaletteProp,
+  alignEnd?: boolean,
   // =FormRadioControl
   title: string | React.JSX.Element;
   description?: string | React.JSX.Element;
@@ -48,6 +56,9 @@ export const FormChipControl = <TValue extends string>(props: {
 
   const { onChange } = props;
 
+  const selectedOption = props.options.find(option => option.value === props.value);
+  const description = selectedOption?.description ?? props.description;
+
   const handleChipClick = React.useCallback((value: Immutable<TValue>) => {
     if (!props.disabled)
       onChange(value);
@@ -55,9 +66,9 @@ export const FormChipControl = <TValue extends string>(props: {
 
   return (
     <FormControl orientation='horizontal' disabled={props.disabled} sx={_styles.control}>
-      {(!!props.title || !!props.description) && <FormLabelStart title={props.title} description={props.description} tooltip={props.tooltip} />}
-      <Box sx={_styles.chipGroup}>
-        {props.options.map((option) => (
+      {(!!props.title || !!description) && <FormLabelStart title={props.title} description={description} tooltip={props.tooltip} />}
+      <Box sx={props.alignEnd ? _styles.chipGroupEnd : _styles.chipGroup}>
+        {props.options.map((option) => optionWithTooltip(option.tooltip,
           <Chip
             key={'opt-' + option.value}
             color={props.color}
@@ -69,7 +80,7 @@ export const FormChipControl = <TValue extends string>(props: {
             sx={_styles.chip}
           >
             {option.label}
-          </Chip>
+          </Chip>,
         ))}
       </Box>
     </FormControl>

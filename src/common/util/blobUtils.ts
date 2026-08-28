@@ -195,14 +195,15 @@ export async function convert_Blob_To_Base64(blob: Blob, debugCaller: string): P
 }
 
 // Convert a Blob to a base64 data URL string. [Fast] uses the FileReader API
-async function convert_Blob_To_Base64DataURL(blob: Blob, debugCaller: string): Promise<string> {
+export async function convert_Blob_To_Base64DataURL(blob: Blob, debugCaller: string): Promise<string> {
   try {
     if (!((blob as unknown) instanceof Blob)) {
       // noinspection ExceptionCaughtLocallyJS
       throw new Error('Invalid blob');
     }
 
-    return new Promise<string>((resolve, reject) => {
+    // await so FileReader failures route through the catch below (dev warn + normalized error)
+    return await new Promise<string>((resolve, reject) => {
       const reader = new FileReader();
       reader.onload = () => {
         if (typeof reader.result === 'string')
@@ -285,4 +286,31 @@ export function convert_UInt8Array_To_Base64(bytes: Uint8Array, debugCaller: str
     Release.IsNodeDevBuild && console.warn(`[DEV] convert_UInt8Array_To_Base64: Conversion failed in (${debugCaller}):`, error);
     throw new Error(`Bytes to base64 failed (${debugCaller})`);
   }
+}
+
+
+/// Misc Operations ///
+
+// Combine multiple Uint8Arrays (byte chunks) into a single Uint8Array
+export function combine_Uint8Arrays_To_Uint8Array(chunks: ReadonlyArray<Uint8Array>): Uint8Array<ArrayBuffer> {
+  const totalLength = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+  const combined = new Uint8Array(totalLength);
+  let offset = 0;
+  for (const chunk of chunks) {
+    combined.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return combined;
+}
+
+// Combine multiple ArrayBuffers
+export function combine_ArrayBuffers_To_Uint8Array(buffers: ReadonlyArray<ArrayBuffer>): Uint8Array<ArrayBuffer> {
+  const totalLength = buffers.reduce((sum, buf) => sum + buf.byteLength, 0);
+  const combined = new Uint8Array(totalLength);
+  let offset = 0;
+  for (const buf of buffers) {
+    combined.set(new Uint8Array(buf), offset);
+    offset += buf.byteLength;
+  }
+  return combined;
 }

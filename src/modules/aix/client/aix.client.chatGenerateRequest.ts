@@ -1,15 +1,15 @@
 import type { Immutable } from '~/common/types/immutable.types';
 import { getImageAsset } from '~/common/stores/blob/dblobs-portability';
 
-import { DLLM, LLM_IF_HOTFIX_NoStream, LLM_IF_HOTFIX_StripImages, LLM_IF_HOTFIX_StripSys0, LLM_IF_HOTFIX_Sys0ToUsr0 } from '~/common/stores/llms/llms.types';
+import { DLLM, LLM_IF_ANT_PromptCaching, LLM_IF_HOTFIX_NoStream, LLM_IF_HOTFIX_NoWebP, LLM_IF_HOTFIX_StripImages, LLM_IF_HOTFIX_StripSys0, LLM_IF_HOTFIX_Sys0ToUsr0 } from '~/common/stores/llms/llms.types';
 import { DMessage, DMessageRole, DMetaReferenceItem, MESSAGE_FLAG_AIX_SKIP, MESSAGE_FLAG_VND_ANT_CACHE_AUTO, MESSAGE_FLAG_VND_ANT_CACHE_USER, messageHasUserFlag } from '~/common/stores/chat/chat.message';
-import { DMessageFragment, DMessageImageRefPart, DMessageZyncAssetReferencePart, isAttachmentFragment, isContentOrAttachmentFragment, isDocPart, isTextContentFragment, isToolResponseFunctionCallPart, isVoidThinkingFragment } from '~/common/stores/chat/chat.fragments';
+import { DMessageFragment, DMessageImageRefPart, DMessageZyncAssetReferencePart, hostedResourceMutedText, isContentOrAttachmentFragment, isToolResponseFunctionCallPart, isVoidThinkingFragment } from '~/common/stores/chat/chat.fragments';
 import { Is } from '~/common/util/pwaUtils';
 import { convert_Base64WithMimeType_To_Blob, convert_Blob_To_Base64 } from '~/common/util/blobUtils';
-import { imageBlobResizeIfNeeded, LLMImageResizeMode } from '~/common/util/imageUtils';
+import { imageBlobConvertType, imageBlobResizeIfNeeded, LLMImageResizeMode } from '~/common/util/imageUtils';
 
 // NOTE: pay particular attention to the "import type", as this is importing from the server-side Zod definitions
-import type { AixAPIChatGenerate_Request, AixMessages_ModelMessage, AixMessages_ToolMessage, AixMessages_UserMessage, AixParts_InlineImagePart, AixParts_MetaCacheControl, AixParts_MetaInReferenceToPart, AixParts_ModelAuxPart } from '../server/api/aix.wiretypes';
+import type { AixAPIChatGenerate_Request, AixMessages_ModelMessage, AixMessages_UserMessage, AixParts_InlineImagePart, AixParts_MetaCacheControl, AixParts_MetaInReferenceToPart, AixParts_ModelAuxPart } from '../server/api/aix.wiretypes';
 
 // TODO: remove console messages to zero, or replace with throws or something
 
@@ -17,7 +17,9 @@ import type { AixAPIChatGenerate_Request, AixMessages_ModelMessage, AixMessages_
 // configuration
 const MODEL_IMAGE_RESCALE_MIMETYPE = !Is.Browser.Safari ? 'image/webp' : 'image/jpeg';
 const MODEL_IMAGE_RESCALE_QUALITY = 0.90;
+const AIX_WIRE_IMAGE_MIMETYPES: string[] = ['image/jpeg', 'image/png', 'image/webp']; // keep in sync with InlineImagePart_schema (aix.wiretypes.ts)
 const IGNORE_CGR_NO_IMAGE_DEREFERENCE = true; // set to false to raise an exception, otherwise the CGR will continue skipping the part
+const AUTO_SYSTEM_IMAGES_INDEX = true; // set to false to disable the small index of images (in system instruction)
 
 
 // AIX <> Simple Text API helpers
@@ -79,16 +81,172 @@ export async function aixCGR_SystemMessage_FromDMessageOrThrow(
     parts: [],
   };
 
+  // collect image description texts during conversion
+  const imageDescriptionTexts: string[] = [];
+
   // process fragments of the system instruction
-  for (const fragment of systemInstruction.fragments) {
-    if (isTextContentFragment(fragment)) {
-      sm.parts.push(fragment.part);
-    } else if (isAttachmentFragment(fragment) && isDocPart(fragment.part)) {
-      sm.parts.push(fragment.part);
-    } else {
-      if (process.env.NODE_ENV === 'development')
-        throw new Error('[DEV] aixCGR_systemMessageFromInstruction: unexpected system fragment');
-      console.warn('[DEV] aixCGR_systemMessageFromInstruction: unexpected system fragment:', fragment);
+  for (const sFragment of systemInstruction.fragments) {
+    switch (sFragment.ft) {
+
+      // Content Fragments - system has [ Text: the good old system instruction ]
+      case 'content':
+        switch (sFragment.part.pt) {
+          // text parts are copied as-is
+          case 'text':
+            sm.parts.push(sFragment.part);
+            break;
+
+          default:
+            const _exhaustiveCheck: never = sFragment.part;
+          // noinspection FallThroughInSwitchStatementJS
+          case 'reference':
+          case 'image_ref':
+          case 'tool_invocation':
+          case 'tool_response':
+          case 'hosted_resource':
+          case 'error':
+          case '_pt_sentinel':
+            console.warn('[DEV] aixCGR_systemMessageFromInstruction: unexpected System Content fragment', { sFragment });
+            break;
+        }
+        break;
+
+      // Attachment Fragments - system has [ Doc: document attachments, such as files, etf., Reference: to Zync parts, including Image which is the only one supported, ... ]
+      case 'attachment':
+        switch (sFragment.part.pt) {
+          // doc parts are copied as-is
+          case 'doc':
+            sm.parts.push(sFragment.part);
+            break;
+
+          // reference: image parts are supported
+          case 'reference':
+            const refPart = sFragment.part;
+            const refPartRt = refPart.rt;
+            switch (refPartRt) {
+              case 'zync':
+                const zt = refPart.zType;
+                switch (zt) {
+                  case 'asset':
+                    const at = refPart.assetType;
+                    switch (at) {
+                      case 'audio':
+                        // dereference the Zync Audio Asset, converting it to an inline buffer
+                        throw new Error('[DEV] audio assets from the user are not supported yet');
+
+                      case 'image':
+                        // dereference the Zync Image Asset, converting it to an inline image
+                        const resizeMode = false; // keep the image as-is, do not diminish quality; as any resize was done at the Persona edit time
+                        try {
+                          sm.parts.push(await aixConvertZyncImageAssetRefToInlineImageOrThrow(refPart, resizeMode));
+
+                          // NOTE: we SHALL make this more generic, but it's okay for the time being
+                          if (AUTO_SYSTEM_IMAGES_INDEX) {
+                            // Generate description text using pure function
+                            const title = sFragment?.ft === 'attachment' ? sFragment.title : undefined;
+                            // const caption = sFragment?.ft === 'attachment' ? sFragment.caption : undefined;
+                            const altText = refPart.zRefSummary?.text || refPart._legacyImageRefPart?.altText;
+                            let width = refPart._legacyImageRefPart?.width;
+                            let height = refPart._legacyImageRefPart?.height;
+                            let prompt: string | undefined;
+                            let author: string | undefined;
+
+                            // Try to get additional metadata from the image asset
+                            try {
+                              if (refPart._legacyImageRefPart) {
+                                const dataRef = refPart._legacyImageRefPart.dataRef;
+                                if (dataRef.reftype === 'dblob' && 'dblobAssetId' in dataRef) {
+                                  const imageAsset = await getImageAsset(dataRef.dblobAssetId);
+                                  if (imageAsset) {
+                                    width = imageAsset.metadata.width;
+                                    height = imageAsset.metadata.height;
+                                    author = imageAsset.metadata.author;
+                                    // Extract info from origin
+                                    if (imageAsset.origin.ot === 'generated') {
+                                      prompt = imageAsset.origin.prompt;
+                                      author = imageAsset.origin.generatorName;
+                                    }
+                                  }
+                                }
+                              }
+                            } catch {
+                              // Continue without additional metadata if asset fetch fails
+                            }
+
+                            // Build description text inline
+                            const parts: string[] = [];
+                            parts.push(title || 'Image');
+                            if (width && height) parts.push(`(${width}×${height})`);
+                            if (altText && altText !== title) parts.push(`- ${altText}`);
+                            if (prompt) {
+                              parts.push(`- Generated from: "${prompt}"`);
+                              if (author) parts.push(`by ${author}`);
+                            } else if (author) parts.push(`- Author: ${author}`);
+                            // if (caption && caption !== altText) parts.push(`- ${caption}`);
+                            const descriptionText = parts.join(' ');
+                            imageDescriptionTexts.push(descriptionText);
+                          }
+
+                        } catch (error: any) {
+                          if (IGNORE_CGR_NO_IMAGE_DEREFERENCE)
+                            console.warn(`Zync asset reference from the system instruction missing in the chat generation request because: ${error?.message || error?.toString() || 'Unknown error'} - continuing without`);
+                          else throw error;
+                        }
+                        break;
+
+                      default:
+                        const _exhaustiveCheck: never = at;
+                        console.warn('[DEV] aixCGR_systemMessageFromInstruction: unexpected System Reference fragment Asset type', at);
+                        break;
+                    }
+                    break;
+
+                  default:
+                    const _exhaustiveCheck: never = zt;
+                    break;
+                }
+                break;
+
+              default:
+                const _exhaustiveCheck: never = refPartRt;
+              // noinspection FallThroughInSwitchStatementJS
+              case '_sentinel':
+                console.warn('[DEV] aixCGR_systemMessageFromInstruction: unexpected System Reference fragment', { sFragment });
+                break;
+            }
+            break;
+
+          default:
+            const _exhaustiveCheck: never = sFragment.part;
+          // noinspection FallThroughInSwitchStatementJS
+          case 'image_ref':
+          case '_pt_sentinel':
+            console.warn('[DEV] aixCGR_systemMessageFromInstruction: unexpected System Attachment fragment', { sFragment });
+            break;
+        }
+        break;
+
+      default:
+        const _exhaustiveCheck: never = sFragment;
+      // noinspection FallThroughInSwitchStatementJS
+      case 'void':
+      case '_ft_sentinel':
+        console.warn('[DEV] aixCGR_systemMessageFromInstruction: unexpected System Fragment type', { sFragment });
+        break;
+    }
+  }
+
+  // Add rich image descriptions if there are images that will be spilled over
+  if (AUTO_SYSTEM_IMAGES_INDEX && imageDescriptionTexts.length > 0) {
+    const firstImageIndex = sm.parts.findIndex(part => part.pt === 'inline_image');
+    if (firstImageIndex >= 0) {
+      const enHeading = imageDescriptionTexts.length === 1
+        ? 'Note: There is 1 image attached to this system instruction that will appear in the following user message:'
+        : `Note: There are ${imageDescriptionTexts.length} images attached to this system instruction that will appear in the following user message:`;
+      const indexText = [enHeading, ...imageDescriptionTexts].join('\n - ');
+
+      // Insert the descriptive text before the first image
+      sm.parts.splice(firstImageIndex, 0, { pt: 'text', text: indexText });
     }
   }
 
@@ -164,7 +322,7 @@ export async function aixCGR_ChatSequence_FromDMessagesOrThrow(
 
                       case 'audio':
                         // dereference the Zync Audio Asset, converting it to an inline buffer
-                        throw '[DEV] audio assets from the user are not supported yet';
+                        throw new Error('[DEV] audio assets from the user are not supported yet');
 
                       default:
                         const _exhaustiveCheck: never = at;
@@ -202,6 +360,20 @@ export async function aixCGR_ChatSequence_FromDMessagesOrThrow(
             uMsg.parts.push(uFragment.part);
             break;
 
+          case 'hosted_resource':
+            // URL-referenced media (user-added video): lower to a media_url wire part - pure JSON, no dereference
+            // NOTE: 'url' comes from the user, is the first one we make come from them - however the others are usually only in assistant messages, we haven't tried roundtripping them
+            if (uFragment.part.resource.via === 'url') {
+              if (uFragment.part.muted)
+                uMsg.parts.push({ pt: 'text', text: hostedResourceMutedText(uFragment.part.resource) }); // muted: the referent stays, the media tokens don't
+              else {
+                const { url, mediaKind, mimeType } = uFragment.part.resource;
+                uMsg.parts.push({ pt: 'media_url', mediaKind, url, ...(mimeType ? { mimeType } : {}) });
+              }
+            } else
+              console.warn('aixCGR_FromDMessages: unexpected Non-User hosted resource via', uFragment.part.resource.via);
+            break;
+
           // skipped (non-user)
           case 'error':
           case 'tool_invocation':
@@ -232,47 +404,57 @@ export async function aixCGR_ChatSequence_FromDMessagesOrThrow(
 
     } else if (dMessageRole === 'assistant') {
 
-      // Note: even tool invocations and responses were interleaved, we will bucket them in 1 model message and 1 tool message
-      // FIXME: assumption that this is the right way of handling it, rather than interleaving many messages
       const modelMessage: AixMessages_ModelMessage = { role: 'model', parts: [] };
-      const toolMessage: AixMessages_ToolMessage = { role: 'tool', parts: [] };
 
       for (const aFragment of m.fragments) {
 
         if ((!isContentOrAttachmentFragment(aFragment) && !isVoidThinkingFragment(aFragment)) || aFragment.part.pt === '_pt_sentinel')
           continue;
 
-        switch (aFragment.part.pt) {
+        // aPart is a DMessageFragment['part'], and we use TS for type narrowing
+        const { part: aPart, vendorState: _vnd } = aFragment;
+        switch (aPart.pt) {
 
           case 'text':
           case 'tool_invocation':
             // Key place where the Aix Zod inferred types are compared to the Typescript defined DMessagePart* types
             // - in case of error, check that the types in `chat.fragments.ts` and `aix.wiretypes.ts` are in sync
-            modelMessage.parts.push(aFragment.part);
+            modelMessage.parts.push(_vnd ? { ...aPart, _vnd } : aPart);
             break;
 
           case 'ma':
-            // https://docs.anthropic.com/en/docs/build-with-claude/extended-thinking#why-thinking-blocks-must-be-preserved
-            // [Anthropic] special case: despite being Void, we send the DVoidModelAuxPart which has signed Thinking blocks and Redacted data,
-            //             which may be instrumental for the model to execute tools-result follow-up actions/text.
-            const isAntModelAux = aFragment.part.textSignature || aFragment.part.redactedData?.length;
-            if (isAntModelAux)
-              modelMessage.parts.push(aFragment.part as AixParts_ModelAuxPart /* NOTE: this is a forced cast from readonly string[] to string[], but not a big deal here*/);
+            // Preserve reasoning continuity across turns. Three channels, any one is sufficient:
+            // - Anthropic: part.textSignature / part.redactedData (bespoke fields, see Anthropic extended thinking docs)
+            // - OpenAI Responses / Gemini: _vnd sidecar (reasoningItem.* / thoughtSignature, opaque continuity handle)
+            // - DeepSeek V4 (OpenAI chat-completions): plain reasoning text in aText is the payload itself
+            const oaiReasoning = _vnd?.openai?.reasoningItem;
+            const hasReasoningHandle =
+              (aPart.textSignature || aPart.redactedData?.length)
+              || (oaiReasoning?.encryptedContent || oaiReasoning?.id)
+              || (aPart.aText && aPart.aType === 'reasoning'); // DeepSeek V4 reasoning in plain text - NOTE: will send LOTS of 'ma' parts (e.g. to Gemini, which doesn't even need them)
+            if (hasReasoningHandle) {
+              const aModelAuxPart = aPart as AixParts_ModelAuxPart; // NOTE: this is a forced cast from readonly string[] to string[], but not a big deal here
+              modelMessage.parts.push(_vnd ? { ...aModelAuxPart, _vnd } : aModelAuxPart);
+            } else {
+              // If none are present (e.g. summary-only reasoning from a vendor with no signed handle), drop the ma part silently;
+              // - passing a bare reasoning reference errors out on some providers (e.g. OpenAI stateless returns "Item with id rs_... not found. ... remove this item from your input.")
+              // console.log('[DEV] aixCGR_FromDMessages: dropping ma part from Assistant message as it has no reasoning handle', { aPart });
+            }
             break;
 
           case 'doc':
             // TODO
             console.warn('aixCGR_FromDMessages: doc part from Assistant not implemented yet');
-            // mMsg.parts.push(aFragment.part);
+            // mMsg.parts.push(aPart);
             break;
 
           case 'error':
             // Note: the llm will receive the extra '[ERROR]' text; this could be optimized to handle errors better
-            modelMessage.parts.push({ pt: 'text', text: `[ERROR] ${aFragment.part.error}` });
+            modelMessage.parts.push({ pt: 'text', text: `[ERROR] ${aPart.error}` });
             break;
 
           case 'reference':
-            const refPart = aFragment.part;
+            const refPart = aPart;
             const refPartRt = refPart.rt;
             switch (refPartRt) {
 
@@ -286,10 +468,13 @@ export async function aixCGR_ChatSequence_FromDMessagesOrThrow(
 
                       case 'image':
                         // dereference the Zync Image Asset, converting it to an inline image
+                        const legacyImageRefPart = refPart._legacyImageRefPart;
+                        const imageSize = legacyImageRefPart && legacyImageRefPart.dataRef.reftype === 'dblob' ? legacyImageRefPart?.dataRef?.bytesSize ?? 0 : 0;
                         const isLastAssistantMessage = _index === lastAssistantMessageIndex;
-                        const resizeMode = isLastAssistantMessage ? false : 'openai-low-res';
+                        const resizeMode = !isLastAssistantMessage ? 'openai-low-res' : imageSize > 400_000 ? 'openai-high-res' : false;
                         try {
-                          modelMessage.parts.push(await aixConvertZyncImageAssetRefToInlineImageOrThrow(refPart, resizeMode));
+                          const aixPart = await aixConvertZyncImageAssetRefToInlineImageOrThrow(refPart, resizeMode);
+                          modelMessage.parts.push(_vnd ? { ...aixPart, _vnd } : aixPart);
                         } catch (error: any) {
                           if (IGNORE_CGR_NO_IMAGE_DEREFERENCE) console.warn(`Zync asset reference from the assistant missing in the chat generation request because: ${error?.message || error?.toString() || 'Unknown error'} - continuing without`);
                           else throw error;
@@ -298,7 +483,7 @@ export async function aixCGR_ChatSequence_FromDMessagesOrThrow(
 
                       case 'audio':
                         // dereference the Zync Audio Asset, converting it to an inline buffer
-                        throw '[DEV] audio assets from the assistant are not supported yet';
+                        throw new Error('[DEV] audio assets from the assistant are not supported yet');
 
                       default:
                         const _exhaustiveCheck: never = at;
@@ -329,10 +514,12 @@ export async function aixCGR_ChatSequence_FromDMessagesOrThrow(
              * FIXME for GEMINI IMAGE GENERATION
              * For now we upload ONLY THE LAST IMAGE as full quality, while all others are resized before transmission.
              */
+            const imageSize = aPart.dataRef.reftype === 'dblob' ? aPart.dataRef?.bytesSize ?? 0 : 0;
             const isLastAssistantMessage = _index === lastAssistantMessageIndex;
-            const resizeMode = isLastAssistantMessage ? false : 'openai-low-res';
+            const resizeMode = !isLastAssistantMessage ? 'openai-low-res' : imageSize > 400_000 ? 'openai-high-res' : false;
             try {
-              modelMessage.parts.push(await aixConvertImageRefToInlineImageOrThrow(aFragment.part, resizeMode));
+              const aixPart = await aixConvertImageRefToInlineImageOrThrow(aPart, resizeMode);
+              modelMessage.parts.push(_vnd ? { ...aixPart, _vnd } : aixPart);
             } catch (error: any) {
               if (IGNORE_CGR_NO_IMAGE_DEREFERENCE) console.warn(`Image from the assistant missing in the chat generation request because: ${error?.message || error?.toString() || 'Unknown error'} - continuing without`);
               else throw error;
@@ -340,14 +527,14 @@ export async function aixCGR_ChatSequence_FromDMessagesOrThrow(
             break;
 
           case 'tool_response':
-            // Valiation of DMessageToolResponsePart of response.type: 'function_call'
+            // Validation of DMessageToolResponsePart of response.type: 'function_call'
             // - NOTE: for now we make the large assumption that responses are JSON objects, not arrays, not strings
             // - This was done for Gemini as the response needs to be an object; however we will need to decide:
             // TODO: decide the responses policy: do we allow only objects? if not, then what's the rule to convert objects to Gemini's inputs?
-            if (isToolResponseFunctionCallPart(aFragment.part)) {
+            if (isToolResponseFunctionCallPart(aPart)) {
               let resultObject: any;
               try {
-                resultObject = JSON.parse(aFragment.part.response.result);
+                resultObject = JSON.parse(aPart.response.result);
               } catch (error: any) {
                 throw new Error('[AIX validation] expecting `tool_response` to be parseable');
               }
@@ -356,28 +543,36 @@ export async function aixCGR_ChatSequence_FromDMessagesOrThrow(
               if (Array.isArray(resultObject))
                 throw new Error('[AIX validation for Gemini] expecting `tool_response` to not be an array');
             }
-            toolMessage.parts.push(aFragment.part);
+            modelMessage.parts.push(_vnd ? { ...aPart, _vnd } : aPart);
+            break;
+
+          case 'hosted_resource':
+            // Hosted resources are download-only artifacts - emit a text placeholder for model context
+            // NOTE: disabled for now - we don't know how usefult this hinting it, and we're clashing with proprietary Anthropic prompts
+            // modelMessage.parts.push({
+            //   pt: 'text',
+            //   text: `[Output file: ${aPart.resource.via === 'anthropic' ? aPart.resource.fileId : 'unknown'}]`,
+            //   // ...(aPart.resource.via === 'anthropic' && {
+            //   //   _vnd: { anthropic: { containerUpload: { fileId: aPart.resource.fileId, ...(aPart.resource.containerId && { containerId: aPart.resource.containerId }) } } },
+            //   // }),
+            // });
             break;
 
           default:
-            const _exhaustiveCheck: never = aFragment.part;
-            console.warn('aixCGR_FromDMessages: unexpected Assistant fragment part', aFragment.part);
+            const _exhaustiveCheck: never = aPart;
+            console.warn('aixCGR_FromDMessages: unexpected Assistant fragment part', aPart);
             break;
         }
       }
 
-      const assistantMessages: (AixMessages_ModelMessage | AixMessages_ToolMessage)[] = [];
-      if (modelMessage.parts.length > 0)
-        assistantMessages.push(modelMessage);
-      if (toolMessage.parts.length > 0)
-        assistantMessages.push(toolMessage);
+      if (modelMessage.parts.length > 0) {
 
-      // (on Assistant messages) handle the ant-cache-prompt user/auto flags, on the very last message
-      if (mHasAntCacheFlag && assistantMessages.length > 0)
-        assistantMessages[assistantMessages.length - 1].parts.push(_clientCreateAixMetaCacheControlPart('anthropic-ephemeral'));
+        // (on Assistant messages) handle the ant-cache-prompt user/auto flags, on the very last message
+        if (mHasAntCacheFlag)
+          modelMessage.parts.push(_clientCreateAixMetaCacheControlPart('anthropic-ephemeral'));
 
-      // Add the assistant messages to the chatSequence
-      acc.chatSequence.push(...assistantMessages);
+        acc.chatSequence.push(modelMessage);
+      }
 
     } else {
 
@@ -456,7 +651,21 @@ export async function aixConvertImageRefToInlineImageOrThrow(imageRefPart: DMess
     }
   }
 
-  return _clientCreateAixInlineImagePart(base64Data, mimeType || dataRef.mimeType);
+  // resolve the effective mime type (stored value, falling back to the data reference's)
+  mimeType = mimeType || dataRef.mimeType as any;
+
+  // wire-compat gate: the AIX schema only accepts jpeg/png/webp, but stored assets can carry
+  // other types (e.g. a small gif that never needed resizing) - transcode those here, which
+  // also heals legacy blobs; on undecodable images this throws, and callers drop just this
+  // image instead of the whole request failing server-side validation
+  if (!AIX_WIRE_IMAGE_MIMETYPES.includes(mimeType)) {
+    const imageBlob = await convert_Base64WithMimeType_To_Blob(base64Data, mimeType, 'aixConvertImageRefToInlineImage.wireGate');
+    const convertedOp = await imageBlobConvertType(imageBlob, MODEL_IMAGE_RESCALE_MIMETYPE, MODEL_IMAGE_RESCALE_QUALITY);
+    base64Data = await convert_Blob_To_Base64(convertedOp.blob, 'aixConvertImageRefToInlineImage.wireGate');
+    mimeType = convertedOp.blob.type as any;
+  }
+
+  return _clientCreateAixInlineImagePart(base64Data, mimeType);
 }
 
 function _clientCreateAixInlineImagePart(base64: string, mimeType: string): AixParts_InlineImagePart {
@@ -475,12 +684,19 @@ function _clientCreateAixMetaInReferenceToPart(items: DMetaReferenceItem[]): Aix
 /// Client-side hotfixes
 
 
-export function clientHotFixGenerateRequest_ApplyAll(llmInterfaces: DLLM['interfaces'], aixChatGenerate: AixAPIChatGenerate_Request, modelName: string): {
-  shallDisableStreaming: boolean;
+export async function clientHotFixGenerateRequest_ApplyAll(llmInterfaces: DLLM['interfaces'], aixChatGenerate: AixAPIChatGenerate_Request, modelName: string): Promise<{
+  hotfixNoStream: boolean;
   workaroundsCount: number;
-} {
+}> {
 
   let workaroundsCount = 0;
+
+  // Strip cache-breakpoint hints for models without explicit prompt-caching support. The auto-breakpoint
+  // policy flags messages regardless of the active model (and flags persist when switching models), so
+  // acting adapters (Anthropic, OpenRouter) must only see hints when the model advertises the capability.
+  // Silent: this is the normal path for most models, not a workaround.
+  if (!llmInterfaces.includes(LLM_IF_ANT_PromptCaching))
+    clientHotFixGenerateRequest_StripCacheHints(aixChatGenerate);
 
   // Apply the remove-sys0 hot fix - at the time of doing it, Gemini Image Generation does not use the system instructions
   if (llmInterfaces.includes(LLM_IF_HOTFIX_StripSys0))
@@ -494,16 +710,32 @@ export function clientHotFixGenerateRequest_ApplyAll(llmInterfaces: DLLM['interf
   if (llmInterfaces.includes(LLM_IF_HOTFIX_StripImages))
     workaroundsCount += clientHotFixGenerateRequest_StripImages(aixChatGenerate);
 
+  // Apply the no-webp hot fix - convert WebP images to JPEG (smaller) or PNG (lossless)
+  if (llmInterfaces.includes(LLM_IF_HOTFIX_NoWebP))
+    workaroundsCount += await clientHotFixGenerateRequest_ConvertWebP(aixChatGenerate, 'image/jpeg');
+
   // Disable streaming for select chat models that don't support it (e.g. o1-preview (old) and o1-2024-12-17)
-  const shallDisableStreaming = llmInterfaces.includes(LLM_IF_HOTFIX_NoStream);
+  const hotfixNoStream = llmInterfaces.includes(LLM_IF_HOTFIX_NoStream);
 
   if (workaroundsCount > 0)
     console.warn(`[DEV] Working around '${modelName}' model limitations: client-side applied ${workaroundsCount} workarounds`);
 
-  return { shallDisableStreaming, workaroundsCount };
+  return { hotfixNoStream, workaroundsCount };
 
 }
 
+
+/** Remove meta_cache_control parts in-place - for models without explicit prompt-caching support. */
+function clientHotFixGenerateRequest_StripCacheHints(aixChatGenerate: AixAPIChatGenerate_Request): void {
+  const stripParts = (parts: { pt: string }[]) => {
+    for (let i = parts.length - 1; i >= 0; i--)
+      if (parts[i].pt === 'meta_cache_control')
+        parts.splice(i, 1);
+  };
+  if (aixChatGenerate.systemMessage)
+    stripParts(aixChatGenerate.systemMessage.parts);
+  aixChatGenerate.chatSequence.forEach(message => stripParts(message.parts));
+}
 
 /**
  * Hot fix for models that don't support vision input and we need to perform the fix ahead of AIX send.
@@ -532,6 +764,35 @@ function clientHotFixGenerateRequest_StripImages(aixChatGenerate: AixAPIChatGene
   }
 
   // Log the number of workarounds applied
+  return workaroundsCount;
+
+}
+
+/**
+ * Hot fix for models that don't support WebP images - converts to JPEG or PNG
+ */
+async function clientHotFixGenerateRequest_ConvertWebP(aixChatGenerate: AixAPIChatGenerate_Request, toFormat: 'image/jpeg' | 'image/png'): Promise<number> {
+
+  let workaroundsCount = 0;
+  const quality = toFormat === 'image/jpeg' ? 0.92 : 1.0;
+
+  for (const message of aixChatGenerate.chatSequence) {
+    for (let j = 0; j < message.parts.length; j++) {
+      const part = message.parts[j];
+      if (part.pt === 'inline_image' && part.mimeType === 'image/webp') {
+        try {
+          const webpBlob = await convert_Base64WithMimeType_To_Blob(part.base64, 'image/webp', 'hotfix-no-webp');
+          const { blob: convertedBlob } = await imageBlobConvertType(webpBlob, toFormat, quality);
+          const convertedBase64 = await convert_Blob_To_Base64(convertedBlob, 'hotfix-no-webp');
+          message.parts[j] = { pt: 'inline_image', mimeType: toFormat, base64: convertedBase64 };
+          workaroundsCount++;
+        } catch (error) {
+          console.warn('[DEV] clientHotFixGenerateRequest_ConvertWebP: Error converting image:', error);
+        }
+      }
+    }
+  }
+
   return workaroundsCount;
 
 }

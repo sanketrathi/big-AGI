@@ -11,15 +11,17 @@ export interface BackendCapabilities {
   hasLlmAlibaba: boolean;
   hasLlmAnthropic: boolean;
   hasLlmAzureOpenAI: boolean;
+  hasLlmBedrock: boolean;
   hasLlmDeepseek: boolean;
   hasLlmGemini: boolean;
   hasLlmGroq: boolean;
   hasLlmLocalAIHost: boolean;
   hasLlmLocalAIKey: boolean;
   hasLlmMistral: boolean;
+  hasLlmMoonshot: boolean;
+  hasLlmNvidiaNIM: boolean;
   hasLlmOllama: boolean;
   hasLlmOpenAI: boolean;
-  hasLlmOpenPipe: boolean;
   hasLlmOpenRouter: boolean;
   hasLlmPerplexity: boolean;
   hasLlmTogetherAI: boolean;
@@ -29,7 +31,7 @@ export interface BackendCapabilities {
   hasBrowsing: boolean;
   hasGoogleCustomSearch: boolean;
   hasVoiceElevenLabs: boolean;
-  // hashes
+  // hashes - TODO(2026-11): remove, unread since LLM-Defs (per-vendor defsV), kept for pre-LLM-Defs clients
   hashLlmReconfig: string;
   // build data
   build?: {
@@ -50,6 +52,7 @@ const useBackendCapabilitiesStore = create<BackendStore>()(
     // initial values
     hasLlmAlibaba: false,
     hasLlmAnthropic: false,
+    hasLlmBedrock: false,
     hasLlmAzureOpenAI: false,
     hasLlmDeepseek: false,
     hasLlmGemini: false,
@@ -57,9 +60,10 @@ const useBackendCapabilitiesStore = create<BackendStore>()(
     hasLlmLocalAIHost: false,
     hasLlmLocalAIKey: false,
     hasLlmMistral: false,
+    hasLlmMoonshot: false,
+    hasLlmNvidiaNIM: false,
     hasLlmOllama: false,
     hasLlmOpenAI: false,
-    hasLlmOpenPipe: false,
     hasLlmOpenRouter: false,
     hasLlmPerplexity: false,
     hasLlmTogetherAI: false,

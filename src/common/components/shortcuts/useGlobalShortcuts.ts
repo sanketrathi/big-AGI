@@ -19,16 +19,24 @@ export const ShortcutKey = {
   PageDown: 'PageDown',
 };
 
-export interface ShortcutObject {
+/** Base key-combo definition shared by registration and catalog. */
+export interface ShortcutDefinition {
   key: string;
   ctrl?: boolean;
   shift?: boolean;
-  // altForNonMac?: boolean;
-  disabled?: boolean;
-  action: (() => void) | '_specialPrintShortcuts';
+  alt?: boolean;
   description?: string;
+}
+
+export interface ShortcutObject extends ShortcutDefinition {
+  disabled?: boolean; // shown greyed; still wins its combo, consuming the key without acting
+  skipIfInput?: boolean; // UNUSED - skip if a text input, textarea, contenteditable (or child thereof) is focused
+  /** Eligible only while focus is contained in this element (checked at press time, like skipIfInput). Unmounted ref = never eligible. */
+  focusWithin?: React.RefObject<HTMLElement>;
+  action: (() => void) | '_specialPrintShortcuts';
+  startDecoratorIcon?: typeof SvgIcon;
   endDecoratorIcon?: typeof SvgIcon;
-  level?: number; // if set, it will exclusively show icons at that level of priority and hide the others
+  level?: number; // handler precedence (desc; ties: focus-scoped first); the bar shows each combo's winning entry
 }
 
 

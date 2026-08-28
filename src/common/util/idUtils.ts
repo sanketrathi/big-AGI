@@ -65,8 +65,38 @@ export function agiCustomId(digits: number) {
 type UuidV4Scope =
   | 'conversation-2'
   | 'persona-2'
+  | 'asrx.engine.instance'
+  | 'speex.engine.instance'
+  | 't2i.engine.instance'
   ;
 
+
+/**
+ * Validates a UUID string as-is (no normalization)
+ */
+export function isValidUuidFast(value: string): boolean {
+  // safety check
+  if (!value || typeof (value as unknown) !== 'string')
+    return false;
+
+  // simple fast validation:
+  // - UUID format: 8-4-4-4-12 hexadecimal characters separated by hyphens
+  // - Example: "123e4567-e89b-12d3-a456-426614174000"
+  return value.length === 36 && value[8] === '-' && value[13] === '-' && value[18] === '-' && value[23] === '-';
+}
+
+/**
+ * Removes a legacy prefix (e.g., 'conv_', 'persona_') from a UUID-like string.
+ * Returns the UUID if valid after prefix removal, otherwise returns false.
+ */
+export function stripLegacyUuidPrefix(value: string): string | false {
+  if (!value) return false;
+
+  const uIdx = value.indexOf('_');
+  const candidate = uIdx > 0 ? value.slice(uIdx + 1) : value;
+
+  return isValidUuidFast(candidate) ? candidate : false;
+}
 
 /**
  * Generates a UUID v4 using the Web Crypto API
@@ -74,12 +104,15 @@ type UuidV4Scope =
  */
 export function agiUuidV4(_scope: UuidV4Scope): string {
   // for modern browsers and Node.js
-  if (typeof crypto !== 'undefined' && crypto.randomUUID)
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function')
     return crypto.randomUUID();
 
-  // fallback for missing crypto.randomUUID
+  // fallback for missing crypto.randomUUID (e.g. non-secure HTTP context)
   const randomValues = new Uint8Array(16);
-  crypto.getRandomValues(randomValues);
+  if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function')
+    crypto.getRandomValues(randomValues);
+  else
+    for (let i = 0; i < 16; i++) randomValues[i] = Math.floor(Math.random() * 256);
 
   // Set version (4) and variant (RFC4122)
   randomValues[6] = (randomValues[6] & 0x0f) | 0x40;

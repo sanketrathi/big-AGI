@@ -41,7 +41,7 @@ export interface ChatActions {
   abortConversationTemp: (cId: DConversationId) => void;
   historyReplace: (cId: DConversationId, messages: DMessage[]) => void;
   historyTruncateToIncluded: (cId: DConversationId, mId: DMessageId, offset: number) => void;
-  historyKeepLastThinkingOnly: (cId: DConversationId) => void;
+  historyStripThinking: (cId: DConversationId, keepCount: number /* 0 = discard all, 1 = keep last */) => void;
   historyView: (cId: DConversationId) => Readonly<DMessage[]> | undefined;
   appendMessage: (cId: DConversationId, message: DMessage) => void;
   deleteMessage: (cId: DConversationId, mId: DMessageId) => void;
@@ -63,14 +63,13 @@ export interface ChatActions {
 
 type ConversationsStore = ChatState & ChatActions;
 
-const defaultConversations: DConversation[] = [createDConversation()];
 
 export const useChatStore = create<ConversationsStore>()(/*devtools(*/
   persist(
     (_set, _get) => ({
 
       // default state
-      conversations: defaultConversations,
+      conversations: [], // we used to have a default conversation here for zero-state, but we moved it to the merge function
 
       prependNewConversation: (personaId: SystemPurposeId | undefined, isIncognito: boolean): DConversationId => {
         const newConversation = createDConversation(personaId);
@@ -89,7 +88,7 @@ export const useChatStore = create<ConversationsStore>()(/*devtools(*/
       /** Used by:
        * - openAndLoadConversations (via DataAtRestV1.recreateConversation),
        * - LinkChatViewer(from RestV1),
-       * - ImportChats.handleChatGptLoad(H)
+       * - ImportChats (JSON/backup file import)
        */
       importConversation: (conversation: DConversation, preventClash: boolean): DConversationId => {
         const { conversations } = _get();
@@ -247,30 +246,26 @@ export const useChatStore = create<ConversationsStore>()(/*devtools(*/
           };
         }),
 
-      historyKeepLastThinkingOnly: (conversationId: DConversationId) =>
+      historyStripThinking: (conversationId: DConversationId, keepCount: number) =>
         _get()._editConversation(conversationId, ({ messages: _currentMessages }) => {
           let madeChanges = false;
           const updatedMessages = [..._currentMessages];
-          let foundLastAssistant = false;
+          let assistantsSeen = 0;
 
-          // reverse iterate
+          // reverse iterate to find and skip `keepCount` most recent assistant messages
           for (let i = updatedMessages.length - 1; i >= 0; i--) {
             const message = updatedMessages[i];
 
             // skip non-assistant messages
             if (message.role !== 'assistant') continue;
 
-            // skip the last assistant message
-            if (!foundLastAssistant) {
-              foundLastAssistant = true;
-              continue;
-            }
+            // preserve the N most recent assistant messages
+            if (assistantsSeen++ < keepCount) continue;
 
-            // skip if doesn't have thinking blocks
-            const hasThinkingBlocks = message.fragments.some(isVoidThinkingFragment);
-            if (!hasThinkingBlocks) continue;
+            // strip thinking blocks from older messages
+            if (!message.fragments.some(isVoidThinkingFragment)) continue;
 
-            // Filter out thinking blocks
+            // filter out thinking blocks
             updatedMessages[i] = {
               ...message,
               fragments: message.fragments.filter(fragment => !isVoidThinkingFragment(fragment)),
@@ -283,7 +278,7 @@ export const useChatStore = create<ConversationsStore>()(/*devtools(*/
           return {
             messages: updatedMessages,
             // No need to update the following as void fragments don't contribute
-            // tokenCount: updateMessagesTokenCounts(updatedMessages, true, 'historyKeepLastThinkingOnly'),
+            // tokenCount: updateMessagesTokenCounts(updatedMessages, true, 'historyStripThinking'),
             // updated: Date.now(),
           };
         }),
@@ -305,7 +300,7 @@ export const useChatStore = create<ConversationsStore>()(/*devtools(*/
 
           return {
             messages,
-            tokenCount: messages.reduce((sum, message) => sum + 4 + message.tokenCount || 0, 3),
+            tokenCount: _sumMessagesTokenCounts(messages),
             updated: Date.now(),
           };
         }),
@@ -320,7 +315,7 @@ export const useChatStore = create<ConversationsStore>()(/*devtools(*/
 
           return {
             messages,
-            tokenCount: messages.reduce((sum, message) => sum + 4 + message.tokenCount || 0, 3),
+            tokenCount: _sumMessagesTokenCounts(messages),
             updated: Date.now(),
           };
         }),
@@ -352,7 +347,7 @@ export const useChatStore = create<ConversationsStore>()(/*devtools(*/
 
           return {
             messages,
-            tokenCount: messages.reduce((sum, message) => sum + 4 + message.tokenCount || 0, 3),
+            tokenCount: _sumMessagesTokenCounts(messages),
             updated: touchUpdated ? Date.now() : conversation.updated,
           };
         }),
@@ -488,13 +483,17 @@ export const useChatStore = create<ConversationsStore>()(/*devtools(*/
        */
       merge: (persistedState, currentState: ConversationsStore): ConversationsStore => {
 
-        // concatenate-merge conversations reloaded from storage
+        // insert all stored conversations [ current (if any), ...stored ]
         const mergedConversations = [...(currentState?.conversations || [])];
         if (persistedState && typeof persistedState === 'object' && 'conversations' in persistedState) {
           const storedConversations = persistedState.conversations as ChatState['conversations'];
-          if (storedConversations.length)
+          if (storedConversations?.length)
             mergedConversations.push(...storedConversations);
         }
+
+        // zero-state: prepend an empty conversations if there are none
+        if (!mergedConversations.length)
+          mergedConversations.unshift(createDConversation(undefined));
 
         return {
           // default shallow merge
@@ -543,10 +542,20 @@ export const useChatStore = create<ConversationsStore>()(/*devtools(*/
 
 // Convenience function to update a set of messages, using the current chatLLM
 function updateMessagesTokenCounts(messages: DMessage[], forceUpdate: boolean, debugFrom: string): number {
+
+  // no messages: 0, not the base overhead (0 = not yet calculated; keeps empty chats free of a phantom count)
+  if (!messages.length)
+    return 0;
+
   const chatLLMId = getChatLLMId();
   return 3 + messages.reduce((sum, message) => {
     return 4 + updateMessageTokenCount(message, chatLLMId, forceUpdate, debugFrom) + sum;
   }, 0);
+}
+
+// Convenience function to sum already-computed message token counts, same formula as above
+function _sumMessagesTokenCounts(messages: DMessage[]): number {
+  return !messages.length ? 0 : messages.reduce((sum, { tokenCount }) => sum + 4 + (tokenCount || 0), 3);
 }
 
 // Convenience function to count the tokens in a DMessage object

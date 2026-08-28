@@ -1,14 +1,27 @@
+import { createEventStreamToSSETransform } from './stream.demuxer.aws-eventstream';
 import { createFastEventSourceDemuxer } from './stream.demuxer.fastsse';
 
 
 export namespace AixDemuxers {
+
+  export type StreamBodyTransform = 'aws-eventstream-binary' | null;
+
+  export function applyBodyTransformer(responseBody: ReadableStream<Uint8Array<ArrayBuffer>>, transform: StreamBodyTransform) {
+    switch (transform) {
+      case 'aws-eventstream-binary':
+        return responseBody.pipeThrough(createEventStreamToSSETransform());
+      case null:
+        return responseBody;
+    }
+  }
+
 
   /**
    * The format of the stream: 'sse' or 'json-nl'
    * - 'fast-sse' is our own parser, optimized for performance. to be preferred when possible over 'sse' (check for full compatibility with the upstream)
    * - 'json-nl' is used by Ollama
    */
-  export type StreamDemuxerFormat = 'fast-sse' | 'json-nl' | null;
+  export type StreamDemuxerFormat = 'fast-sse' | 'json-nl';
 
 
   /**
@@ -21,8 +34,8 @@ export namespace AixDemuxers {
         return createFastEventSourceDemuxer();
       case 'json-nl':
         return _createJsonNlDemuxer();
-      case null:
-        return _nullStreamDemuxerWarn;
+      default:
+        throw new Error(`Unsupported stream demuxer format: ${format}`);
     }
   }
 
@@ -36,7 +49,11 @@ export namespace AixDemuxers {
 
   export type StreamDemuxer = {
     demux: (chunk: string) => DemuxedEvent[];
-    remaining: () => string;
+    /**
+     * Attempt to recover events from unflushed buffer data at stream end.
+     * @returns Recovered events, or empty array if nothing to recover
+     */
+    flushRemaining: () => DemuxedEvent[];
 
     // unused, but may be provided by some demuxers
     lastEventId?: () => string | undefined; // not used for now - SSE defines it for the stream
@@ -67,15 +84,34 @@ function _createJsonNlDemuxer(): AixDemuxers.StreamDemuxer {
       }));
     },
 
-    remaining: () => buffer,
+    flushRemaining: (): AixDemuxers.DemuxedEvent[] => {
+      const remaining = buffer.trim();
+      buffer = '';
+      if (!remaining) return [];
+
+      const events: AixDemuxers.DemuxedEvent[] = [];
+      const skippedLines: string[] = [];
+
+      // recover by splitting and finding potential "{ .. }" lines
+      for (const rawLine of remaining.split('\n')) {
+        const line = rawLine.trim();
+        if (!line) continue;
+        if (line.startsWith('{') && line.endsWith('}'))
+          events.push({ type: 'event', data: line });
+        else
+          skippedLines.push(line.length > 100 ? line.slice(0, 100) + '...' : line);
+      }
+
+      // warn about recovery for protocol debugging
+      if (events.length > 0 || skippedLines.length > 0)
+        console.warn(`[AIX] JSON-NL demuxer: recovered ${events.length} event(s) from unterminated stream`, {
+          skippedLines: skippedLines.length,
+          bufferLen: remaining.length,
+          bufferSample: remaining.length <= 200 ? remaining : remaining.slice(0, 200) + '...',
+          ...(skippedLines.length > 0 && { skipped: skippedLines }),
+        });
+
+      return events;
+    },
   };
 }
-
-
-const _nullStreamDemuxerWarn: AixDemuxers.StreamDemuxer = {
-  demux: () => {
-    console.warn('Null demuxer called - shall not happen, as it is only created in non-streaming');
-    return [];
-  },
-  remaining: () => '',
-};

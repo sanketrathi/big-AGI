@@ -2,13 +2,56 @@ import * as React from 'react';
 
 import type { SxProps } from '@mui/joy/styles/types';
 import { Box, MenuList, styled } from '@mui/joy';
-import { ClickAwayListener, Popper, PopperPlacementType } from '@mui/base';
+import { ClickAwayListener, Popper, PopperPlacementType, Portal } from '@mui/base';
+
+import { animationOpacityFadeIn } from '~/common/util/animUtils';
 
 
 // adds the 'sx' prop to the Popper, and defaults zIndex to 1000
 const Popup = styled(Popper)({
   zIndex: 1000,
 });
+
+// screen-dimming scrim, behind the popup (opt-in via `darkenBackdrop`, e.g. mobile pickers);
+// exported for popup-family components that render their own scrim (RichMenu) - one look, one definition
+export const popupBackdropSx: SxProps = {
+  position: 'fixed',
+  inset: 0,
+  backgroundColor: 'background.backdrop',
+  animation: `${animationOpacityFadeIn} 0.15s ease-out`,
+};
+
+/* Anchor spotlight, unused by choice (plain scrim = standard sheet behavior): punches a hole in
+ * the scrim over the anchor, keeping it lit AND tappable (clip-path excludes the hole from
+ * hit-testing) even when the anchor is trapped in a low-z stacking context that no z-index raise
+ * can escape (e.g. the mobile composer). Single-subpath polygon: outer rect, then an
+ * opposite-winding inner rect bridged from the left edge (nonzero fill rule).
+ * Usage: `clipPath: _backdropClipPath(props.anchorEl)` on the scrim Box.
+ * Caveat: measured once at open - the hole goes stale if the anchor moves (resize/scroll).
+ */
+// function _backdropClipPath(anchorEl: HTMLElement): string {
+//   const PAD = 3;
+//   const r = anchorEl.getBoundingClientRect();
+//   const t = Math.round(r.top - PAD), b = Math.round(r.bottom + PAD);
+//   const l = Math.round(r.left - PAD), e = Math.round(r.right + PAD);
+//   return `polygon(0 0, 100% 0, 100% 100%, 0 100%, 0 ${t}px, ${l}px ${t}px, ${l}px ${b}px, ${e}px ${b}px, ${e}px ${t}px, ${l}px ${t}px, 0 ${t}px)`;
+// }
+
+// data-attribute marking a CloseablePopup's DOM root, so sibling/parent popups don't treat a tap inside it as a click-away (see handleClickAway)
+const closeablePopupDataAttr = 'data-closeable-popup';
+
+
+/**
+ * Use this for submenus on any Menu/Popup, to prevent the parent popup from closing when clicking on this item. e.g.
+ * <MenuItem onClick={joyKeepPopup(() => setShowModelsHidden(!showModelsHidden))}> ...
+ */
+export function joyKeepPopup<TEvent extends React.MouseEvent>(fn: (event: TEvent) => void) {
+  return (event: TEvent) => {
+    // the key to not close the popup when activating this menu item - REV ENG
+    (event as any).defaultMuiPrevented = true;
+    fn(event);
+  };
+}
 
 
 /**
@@ -21,7 +64,7 @@ const Popup = styled(Popper)({
  *  - ...
  */
 export function CloseablePopup(props: {
-  menu?: boolean, // whether to render as a MenuList (or as a Box otherwise)
+  menu?: true, // whether to render as a MenuList (or as a Box otherwise)
   anchorEl: HTMLElement | null,
   onClose: () => void,
 
@@ -29,6 +72,12 @@ export function CloseablePopup(props: {
   size?: 'sm' | 'md' | 'lg', // if set, overrides 'dense' and applies to the MenuList
   dense?: boolean,
   bigIcons?: boolean,
+  boxShadow?: string, // boxShadow style, defaults to 'md'
+  darkenBackdrop?: boolean, // dims the rest of the screen while open (a tap on the scrim is a click-away)
+
+  // behavior changes
+  disableMenuTypeahead?: boolean, // disable alphanumeric typeahead navigation in MenuList
+  noAutoFocus?: boolean, // if true, does not auto-focus on mount
 
   placement?: PopperPlacementType,
   maxHeightGapPx?: number,
@@ -47,20 +96,46 @@ export function CloseablePopup(props: {
 
   const { onClose } = props;
 
+  /**
+   * Callback ref for focus management - called upon mount, to transfer focus.
+   * Note: needs menuItems in there for full and good navigation of a list, as the menu expects to land focus on those items.
+   */
+  const autoFocusOnMount = React.useCallback((element: HTMLElement | null) => {
+    if (element && props.anchorEl)
+      requestAnimationFrame(() => element.focus());
+  }, [props.anchorEl]);
+
   const handleClose = React.useCallback((event: MouseEvent | TouchEvent | React.KeyboardEvent) => {
     event.stopPropagation();
     onClose();
   }, [onClose]);
 
+  const handleClickAway = React.useCallback((event: MouseEvent | TouchEvent) => {
+    // a tap inside ANOTHER CloseablePopup (e.g. an open submenu) is not an "outside" tap for us: those popups
+    // render in a SEPARATE portal, so without this they look like a click-away. On mobile this fires on touchend
+    // and would close us - unmounting the tapped item before its onClick fires (swallowing the action).
+    const targetEl = event.target as Element | null;
+    if (targetEl?.closest?.(`[${closeablePopupDataAttr}]`)) return;
+    handleClose(event);
+  }, [handleClose]);
+
   const handleKeyDown = React.useCallback((event: React.KeyboardEvent) => {
     if (event.key === 'Tab') {
-      handleClose(event);
+      // NOTE: the following is not needed since we fixed 'tab'
+      // Close menu on Tab - this prevents focus from escaping the popup
+      // while keeping the popup simple (no full focus trap implementation)
+      if (props.noAutoFocus)
+        handleClose(event);
     } else if (event.key === 'Escape') {
-      if (props.anchorEl)
-        props.anchorEl?.focus();
       handleClose(event);
+      if (props.anchorEl)
+        props.anchorEl.focus();
+    } else if (props.disableMenuTypeahead && event.key.length === 1) {
+      // Prevent MenuList's typeahead navigation when disabled
+      event.stopPropagation();
+      // event.preventDefault(); // this is needed.. e.g. typing on input boxes
     }
-  }, [handleClose, props.anchorEl]);
+  }, [handleClose, props.anchorEl, props.disableMenuTypeahead, props.noAutoFocus]);
 
 
   // memos
@@ -71,11 +146,13 @@ export function CloseablePopup(props: {
     },
   }], [props.placementOffset]);
 
+  const popperMemoSx: undefined | SxProps = React.useMemo(() => !props.zIndex ? undefined : ({ zIndex: props.zIndex }), [props.zIndex]);
+
   const styleMemoSx: SxProps = React.useMemo(() => ({
 
     // style
     backgroundColor: 'background.popup',
-    boxShadow: 'md',
+    boxShadow: props.boxShadow ?? 'md',
     ...(props.maxHeightGapPx !== undefined ? { maxHeight: `calc(100dvh - ${props.maxHeightGapPx}px)`, overflowY: 'auto' } : {}),
     ...(props.maxWidth !== undefined && { maxWidth: props.maxWidth }),
     ...(props.minWidth !== undefined && { minWidth: props.minWidth }),
@@ -96,10 +173,15 @@ export function CloseablePopup(props: {
     // inject
     ...(props.sx || {}),
 
-  }), [props.maxHeightGapPx, props.maxWidth, props.minWidth, props.size, props.dense, props.bigIcons, props.noBottomPadding, props.noTopPadding, props.sx]);
+  }), [props.boxShadow, props.maxHeightGapPx, props.maxWidth, props.minWidth, props.size, props.dense, props.bigIcons, props.noBottomPadding, props.noTopPadding, props.sx]);
 
+  return <>
 
-  return (
+    {/* portaled to body, so host stacking contexts can't trap it under the page */}
+    {props.darkenBackdrop && !!props.anchorEl && (
+      <Portal><Box zIndex={(props.zIndex ?? 1000) - 1} sx={popupBackdropSx} /></Portal>
+    )}
+
     <Popup
       role={undefined}
       open={!!props.anchorEl}
@@ -107,19 +189,20 @@ export function CloseablePopup(props: {
       placement={props.placement}
       disablePortal={false}
       modifiers={modifiersMemo}
-      sx={props.zIndex ? { zIndex: props.zIndex } : undefined}
+      sx={popperMemoSx}
     >
-      <ClickAwayListener onClickAway={handleClose}>
+      <ClickAwayListener onClickAway={handleClickAway}>
         {props.menu ? (
-          <MenuList size={props.size} onKeyDown={handleKeyDown} sx={styleMemoSx}>
+          <MenuList variant={props.darkenBackdrop ? 'plain' : undefined} ref={props.noAutoFocus ? undefined : autoFocusOnMount} size={props.size} onKeyDown={handleKeyDown} sx={styleMemoSx} {...{ [closeablePopupDataAttr]: '' }}>
             {props.children}
           </MenuList>
         ) : (
-          <Box onKeyDown={handleKeyDown} sx={styleMemoSx}>
+          <Box ref={props.noAutoFocus ? undefined : autoFocusOnMount} onKeyDown={handleKeyDown} sx={styleMemoSx} {...{ [closeablePopupDataAttr]: '' }}>
             {props.children}
           </Box>
         )}
       </ClickAwayListener>
     </Popup>
-  );
+
+  </>;
 }

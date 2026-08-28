@@ -7,6 +7,7 @@ import KeyboardArrowDownIcon from '@mui/icons-material/KeyboardArrowDown';
 
 import type { TextToImageProvider } from '~/common/components/useCapabilities';
 import { OpenAIIcon } from '~/common/components/icons/vendors/OpenAIIcon';
+import { OpenRouterIcon } from '~/common/components/icons/vendors/OpenRouterIcon';
 import { hideOnMobile } from '~/common/app.theme';
 import { optimaSelectSlotProps } from '~/common/layout/optima/bar/OptimaBarDropdown';
 
@@ -27,7 +28,7 @@ export function DrawProviderSelector(props: {
         label: provider.label + (provider.painter !== provider.label ? ` ${provider.painter}` : ''),
         value: provider.providerId,
         configured: provider.configured,
-        Icon: provider.vendor === 'openai' ? OpenAIIcon : FormatPaintTwoToneIcon,
+        Icon: provider.vendor === 'openai' ? OpenAIIcon : provider.vendor === 'openrouter' ? OpenRouterIcon : FormatPaintTwoToneIcon,
       });
     });
     return options;
@@ -62,7 +63,7 @@ export function DrawProviderSelector(props: {
         // sx={{ minWidth: '12rem' /* doesn't work anymore with SlotProps */ }}
       >
         {providerOptions.map(option => (
-          <Option key={option.value} value={option.value} disabled={!option.configured}>
+          <Option key={option.value} value={option.value} disabled={!option.configured} label={option.label}>
             <ListItemDecorator>
               {!!option.Icon && <option.Icon />}
             </ListItemDecorator>

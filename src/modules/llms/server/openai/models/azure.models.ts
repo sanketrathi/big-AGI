@@ -4,13 +4,29 @@ import * as z from 'zod/v4';
 import { LLM_IF_OAI_Chat } from '~/common/stores/llms/llms.types';
 
 import type { ModelDescriptionSchema } from '../../llm.server.types';
+import { _knownOpenAIChatModels, llmsFallbackForOpenAIModel } from './openai.models';
+import { fromManualMapping, llmsDefineManualMappings } from '../../models.mappings';
 
-import { fromManualMapping, ManualMappings } from './models.data';
-import { _knownOpenAIChatModels } from './openai.models';
+// --- Azure Model ID inference (auto-derived from _knownAzureChatModels) ---
+export type LlmsAzureModelId = typeof _knownAzureChatModels[number]['idPrefix'];
+
+
+// configuration
+/**
+ * Azure OpenAI does not support the web_search_preview tool as of 2025-11-18 and since 2025-09-12
+ * as such we remove model parameters that enable search.
+ * Re-verified 2026-08-17: the Responses how-to still documents only function calling and code_interpreter.
+ */
+const AZURE_FORCE_DISABLE_WEB_SEARCH_TOOL = true;
+/**
+ * Azure OpenAI does not support the image_generation tool as of 2025-11-18 - however we let this through
+ * to enable future no-code image generation support once Azure enables it.
+ */
+const AZURE_FORCE_DISABLE_IMAGE_GENERATION_TOOL = false;
 
 
 // [Azure]
-const _knownAzureChatModels: ManualMappings = [
+const _knownAzureChatModels = llmsDefineManualMappings([
   // ... if you have your own models, map them here ...
   //
   // NOTE: the ManualMapping object is similar to ModelDescriptionSchema,
@@ -28,6 +44,22 @@ const _knownAzureChatModels: ManualMappings = [
   //   chatPrice: { input: 2, output: 6 },
   // },
   //
+
+  // [Azure, 2026-08-17] most GPT-5.x/4.1 ids match OpenAI's exactly (dots included), so they resolve
+  // through _knownOpenAIChatModels below. The naming divergence that matters is the ChatGPT Instant pointer,
+  // which Microsoft ships as 'gpt-chat-latest' while OpenAI serves it as 'chat-latest' (mapped right below).
+  // The chat previews 'gpt-5.3-chat' / 'gpt-5.2-chat' / 'gpt-5.1-chat' / 'gpt-5-chat' (Azure drops OpenAI's
+  // '-latest' suffix) get no defs on purpose: they are gone on both sides - shut down on OpenAI (see
+  // openAIModelsShutdownDenyList) and 'Retired' on Azure since 2026-05-13/2026-06-29, which per the lifecycle
+  // policy means 410 Gone and no new deployments, with 'gpt-chat-latest' as the declared replacement. The
+  // capabilities page still lists them (128,000 context / 16,384 max output) - it lags the retirement schedule.
+  // https://learn.microsoft.com/en-us/azure/ai-foundry/openai/concepts/model-retirement-schedule
+  // https://learn.microsoft.com/en-us/azure/ai-foundry/foundry-models/concepts/models-sold-directly-by-azure
+  {
+    idPrefix: 'gpt-chat-latest',
+    label: 'ChatGPT Instant',
+    symLink: 'chat-latest', // -> _knownOpenAIChatModels
+  },
 
   // [Azure] variants: Azure names these differently compared to OpenAI (no dots) - also: obsolete
   {
@@ -47,7 +79,7 @@ const _knownAzureChatModels: ManualMappings = [
     interfaces: [LLM_IF_OAI_Chat], // as azure doesn't version model id's (in the deployments), let's assume no function calling
   },
 
-];
+]);
 
 
 // parser for Azure models - 2025-03-14: verified
@@ -63,21 +95,20 @@ const _azureOpenAIDeployment_schema = z.object({
 });
 type AzureOpenAIDeployment = z.infer<typeof _azureOpenAIDeployment_schema>;
 
-const _azureOpenAIDeploymentsList_schema = z.object({
-  object: z.literal('list'),
-  data: z.array(_azureOpenAIDeployment_schema),
-});
-
+// const _azureOpenAIDeploymentsList_schema = z.object({
+//   object: z.literal('list'),
+//   data: z.array(_azureOpenAIDeployment_schema),
+// });
 
 export function azureParseFromDeploymentsAPI(deploymentsApiResponse: object): AzureOpenAIDeployment[] {
-  return _azureOpenAIDeploymentsList_schema.parse(deploymentsApiResponse).data;
+  return z.array(_azureOpenAIDeployment_schema).parse(deploymentsApiResponse);
 }
 
 
 const _azureDenyListPrefix = [
   // unsupported for chat: text embedding models
   'text-embedding-',
-];
+] as const;
 
 export function azureDeploymentFilter({ id }: AzureOpenAIDeployment) {
   // filter out models that are not chat models
@@ -108,13 +139,23 @@ export function azureDeploymentToModelDescription(deployment: AzureOpenAIDeploym
     isNameAKnownOpenAIModel ? deploymentName : likelyTheOpenAIModel,
     modelCreated,
     modelUpdated,
-    undefined,
+    llmsFallbackForOpenAIModel(isNameAKnownOpenAIModel ? deploymentName : likelyTheOpenAIModel, true),
     true,
   );
 
   // if the user has set a custom name, show it in the label in addition to the generic OpenAI model name
   const preciseLabel = (deploymentName !== likelyTheOpenAIModel) ?
     `${label} (${deploymentName})` : label;
+
+
+  // Azure hotfix: remove web search tool if flag is set
+  if (AZURE_FORCE_DISABLE_WEB_SEARCH_TOOL && restOfModelDescription.parameterSpecs?.length)
+    restOfModelDescription.parameterSpecs = restOfModelDescription.parameterSpecs.filter(({ paramId }) => paramId !== 'llmVndOaiWebSearchContext');
+
+  // Azure hotfix: remove image generation tool disabling if flag is set
+  if (AZURE_FORCE_DISABLE_IMAGE_GENERATION_TOOL && restOfModelDescription.parameterSpecs?.length)
+    restOfModelDescription.parameterSpecs = restOfModelDescription.parameterSpecs.filter(({ paramId }) => paramId !== 'llmVndOaiImageGeneration');
+
 
   return {
     id: deploymentName,

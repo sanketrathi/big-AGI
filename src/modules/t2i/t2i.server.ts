@@ -1,5 +1,20 @@
 import * as z from 'zod/v4';
 
+import type { T2iContextName } from './t2i.types';
+
+export type { T2iContextName } from './t2i.types';
+
+
+// Image generation options
+
+export interface T2iGenerateOptions {
+  /** Which surface is requesting the generation (for logging/analytics) */
+  t2iContextName: T2iContextName;
+  /** When true, optimize for profile picture generation (lower cost, quality, smaller size) */
+  agiProfilePic?: true;
+  /** Abort signal for cancellation */
+  abortSignal?: AbortSignal;
+}
 
 // Image generation output
 

@@ -24,15 +24,21 @@ export async function* heartbeatsWhileAwaiting<TOut>(operationPromise: Promise<T
   while (true) {
 
     // setup next ❤ timeout
+    let heartbeatTimer: ReturnType<typeof setTimeout>;
     const heartbeatPromise = new Promise<'❤'>(resolve => {
-      setTimeout(() => resolve('❤'), timeoutMs);
+      heartbeatTimer = setTimeout(() => resolve('❤'), timeoutMs);
     });
 
     // race ❤|operation
+    /**
+     * Note: Vercel Edge Runtime infrastructure may log stack traces pointing here when ReadableStream fails
+     * This is normal - the runtime error-logs where the operation was pending when the stream closed, independently from our error handling.
+     */
     const winner = await Promise.race([
       operationWrapper,
       heartbeatPromise,
     ]);
+    clearTimeout(heartbeatTimer!); // clear the pending ❤ timer (no-op if already fired), so a fast operation doesn't leave a live timer
 
     // if the operation won, great, we're done
     if (winner !== '❤')

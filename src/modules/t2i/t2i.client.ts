@@ -1,67 +1,53 @@
 import * as React from 'react';
+import { useShallow } from 'zustand/react/shallow';
 
 import type { AixParts_InlineImagePart } from '~/modules/aix/server/api/aix.wiretypes';
-import type { ModelVendorId } from '~/modules/llms/vendors/vendors.registry';
-import { resolveDalleModelId, useDalleStore } from '~/modules/t2i/dalle/store-module-dalle';
 
 import { addDBImageAsset, DBlobDBScopeId } from '~/common/stores/blob/dblobs-portability';
 import { nanoidToUuidV4 } from '~/common/util/idUtils';
 
 import type { CapabilityTextToImage, TextToImageProvider } from '~/common/components/useCapabilities';
-import type { DLLM } from '~/common/stores/llms/llms.types';
-import type { DModelsService, DModelsServiceId } from '~/common/stores/llms/llms.service.types';
+import type { DModelsServiceId } from '~/common/stores/llms/llms.service.types';
 import { convert_Base64WithMimeType_To_Blob } from '~/common/util/blobUtils';
 import { createDMessageDataRefDBlob, createZyncAssetReferenceContentFragment, DMessageContentFragment } from '~/common/stores/chat/chat.fragments';
 import { llmsStoreState, useModelsStore } from '~/common/stores/llms/store-llms';
-import { shallowEquals } from '~/common/util/hooks/useShallowObject';
 
-import type { T2iCreateImageOutput } from './t2i.server';
-import { openAIGenerateImagesOrThrow, openAIImageModelsCurrentGeneratorName } from './dalle/openaiGenerateImages';
-import { useTextToImageStore } from './store-module-t2i';
-
-
-// configuration
-const T2I_ENABLE_LOCAL_AI = false; // Note: LocalAI t2i integration is experimental
+// IMPORTANT: Import TYPE (!)
+import type { T2iCreateImageOutput, T2iGenerateOptions } from './t2i.server';
+import type { DT2IEngineAny, DT2IEngineId } from './t2i.types';
+import { getImageModelFamily, resolveDalleModelId } from './t2i.config';
+import { openAIGenerateImagesOrThrow } from './dalle/openaiGenerateImages';
+import { openRouterGenerateImagesOrThrow } from './openrouter/openrouterGenerateImages';
+import { t2iAreCredentialsValid, t2iFindEngineById, useT2IStore } from './store-module-t2i';
+import { t2iEngineGeneratorName, t2iFindVendor } from './t2i.vendors-registry';
 
 
 // Capabilities API - used by Settings, and whomever wants to check if this is available
 
 export function useCapabilityTextToImage(): CapabilityTextToImage {
 
-  // external state
-
-  const stableLlmsModelServices = React.useRef<T2ILlmsModelServices[]>(undefined);
-  const llmsModelServices = useModelsStore(({ llms, sources }) => {
-    const next = _findLlmsT2IServices(llms, sources);
-    const prev = stableLlmsModelServices.current;
-    if (prev
-      && prev.length === next.length
-      && prev.every((v, i) => shallowEquals(v, next[i]))
-    ) return prev;
-    return stableLlmsModelServices.current = next;
-  });
-
-  const userProviderId = useTextToImageStore(state => state.selectedT2IProviderId);
-
-  const dalleModelId = useDalleStore(state => state.dalleModelId);
-
+  // external state - engine instances, and the LLM models (for the 'configured' state of linked engines)
+  const { engines, activeEngineId } = useT2IStore(useShallow(({ engines, activeEngineId }) => ({ engines, activeEngineId })));
+  // stable signature: only re-render when the set of services-with-models changes, not on every llms edit
+  const servicesWithModels = useModelsStore(useShallow(state => state.sources.filter(s => state.llms.some(m => m.sId === s.id)).map(s => s.id)));
 
 
   // memo
 
   const { mayWork, mayEdit, providers, activeProvider } = React.useMemo(() => {
-    const providers = _getTextToImageProviders(llmsModelServices);
-    const activeProvider = _resolveActiveT2IProvider(userProviderId, providers);
+    const providers = _getTextToImageProviders(engines, servicesWithModels);
+    const activeProvider = _resolveActiveT2IProvider(activeEngineId, providers);
     const mayWork = providers.some(p => p.configured);
-    const resolvedDalleModelId = resolveDalleModelId(dalleModelId);
-    const mayEdit = activeProvider?.vendor === 'openai' && resolvedDalleModelId === 'gpt-image-1';
+    const activeEngine = activeProvider ? engines[activeProvider.providerId] ?? null : null;
+    const mayEdit = !!activeEngine && activeEngine.vendorType === 'openai' && activeEngine.profile.dialect === 'dalle'
+      && getImageModelFamily(resolveDalleModelId(activeEngine.profile.dalleModelId)) === 'gpt-image';
     return {
       mayWork,
       mayEdit,
       providers,
       activeProvider,
     };
-  }, [userProviderId, dalleModelId, llmsModelServices]);
+  }, [activeEngineId, engines, servicesWithModels]);
 
 
   return {
@@ -69,7 +55,7 @@ export function useCapabilityTextToImage(): CapabilityTextToImage {
     mayEdit,
     providers,
     activeProviderId: activeProvider?.providerId || null,
-    setActiveProviderId: useTextToImageStore.getState().setSelectedT2IProviderId,
+    setActiveProviderId: useT2IStore.getState().setActiveEngineId,
   };
 }
 
@@ -78,43 +64,65 @@ export function useCapabilityTextToImage(): CapabilityTextToImage {
 
 export function getActiveTextToImageProviderOrThrow() {
 
-  // get user selection and available providers
-  const { selectedT2IProviderId } = useTextToImageStore.getState();
-  const { llms, sources: modelsServices } = llmsStoreState();
-  const llmsModelServiceIDs = _findLlmsT2IServices(llms, modelsServices);
-  const providers = _getTextToImageProviders(llmsModelServiceIDs);
+  // get the engines and resolve the active provider using the same pure functions as the hook
+  const { engines, activeEngineId } = useT2IStore.getState();
+  const { llms, sources } = llmsStoreState();
+  const servicesWithModels = sources.filter(s => llms.some(m => m.sId === s.id)).map(s => s.id);
+  const providers = _getTextToImageProviders(engines, servicesWithModels);
+  const activeProvider = _resolveActiveT2IProvider(activeEngineId, providers);
 
-  // resolve the active provider using pure function
-  const activeProvider = _resolveActiveT2IProvider(selectedT2IProviderId, providers);
-  if (!activeProvider)
+  if (!activeProvider || !activeProvider.configured)
     throw new Error('No Text-to-Image providers are configured');
 
   return activeProvider;
 }
 
-async function _t2iGenerateImagesOrThrow({ providerId, vendor }: TextToImageProvider, prompt: string, aixInlineImageParts: AixParts_InlineImagePart[], count: number): Promise<T2iCreateImageOutput[]> {
-  switch (vendor) {
+/**
+ * Low-level T2I generation that returns raw image outputs (base64 + metadata)
+ * - NOTE: MINIMIZE - the app wants to use the other version, instead, which creates the DBlob/Assets directly
+ */
+export async function t2iGenerateImagesOrThrow(
+  provider: TextToImageProvider | null, // null: auto-detect active provider
+  prompt: string,
+  aixInlineImageParts: AixParts_InlineImagePart[],
+  count: number,
+  options: T2iGenerateOptions,
+): Promise<T2iCreateImageOutput[]> {
 
-    case 'gemini':
-      throw new Error('Gemini Imagen integration coming soon');
+  // use the active provider if null
+  if (!provider)
+    provider = getActiveTextToImageProviderOrThrow();
 
+  // resolve the engine instance behind the provider (providerId = engineId)
+  const engine = t2iFindEngineById(provider.providerId);
+  if (!engine)
+    throw new Error('The selected image engine is no longer available');
+
+  // NOTE: service resolution is per-vendor-case on purpose - future engines
+  // (system-provided, api-key) generate without a linked LLM service
+  switch (engine.vendorType) {
+
+    case 'azure':
     case 'localai':
-      // if (!provider.providerId)
-      //   throw new Error('No LocalAI Model service configured for TextToImage');
-      // return await localaiGenerateImages(provider.id, prompt, count);
-      throw new Error('LocalAI t2i integration is not yet available');
-
     case 'openai':
-      if (!providerId)
-        throw new Error('No OpenAI Model Service configured for TextToImage');
-      return await openAIGenerateImagesOrThrow(providerId, prompt, aixInlineImageParts, count);
+      return await openAIGenerateImagesOrThrow(_engineServiceIdOrThrow(engine), engine.vendorType, engine.profile, prompt, aixInlineImageParts, count, options);
 
-    case 'xai':
-      throw new Error('xAI image generation integration coming soon');
+    case 'openrouter':
+      if (aixInlineImageParts?.length)
+        throw new Error('Image transformation is not yet available with OpenRouter. Please use an OpenAI service instead.');
+      return await openRouterGenerateImagesOrThrow(_engineServiceIdOrThrow(engine), engine.profile, prompt, count, options);
 
     default:
-      throw new Error(`Unknown T2I vendor: ${vendor}`);
+      const _exhaustiveCheck: never = engine;
+      throw new Error('Unknown T2I engine');
   }
+}
+
+/** Service-backed engines: resolve the linked LLM service id for transport access. */
+function _engineServiceIdOrThrow(engine: DT2IEngineAny): DModelsServiceId {
+  if (engine.credentials.type !== 'llms-service' || !engine.credentials.serviceId)
+    throw new Error(`No Model service configured for ${engine.label}`);
+  return engine.credentials.serviceId;
 }
 
 /**
@@ -127,14 +135,11 @@ export async function t2iGenerateImageContentFragments(
   aixInlineImageParts: AixParts_InlineImagePart[],
   count: number,
   scopeId: DBlobDBScopeId,
+  options: T2iGenerateOptions,
 ): Promise<DMessageContentFragment[]> {
 
-  // T2I: Use the active provider if null
-  if (!t2iProvider)
-    t2iProvider = getActiveTextToImageProviderOrThrow();
-
-  // T2I: Generate
-  const generatedImages = await _t2iGenerateImagesOrThrow(t2iProvider, prompt, aixInlineImageParts, count);
+  // T2I: Generate using low-level function
+  const generatedImages = await t2iGenerateImagesOrThrow(t2iProvider, prompt, aixInlineImageParts, count, options);
   if (!generatedImages?.length)
     throw new Error('No image generated');
 
@@ -178,7 +183,7 @@ export async function t2iGenerateImageContentFragments(
         ...(_i.altText ? { altText: _i.altText } : {}),
         ...(_i.width ? { width: _i.width } : {}),
         ...(_i.height ? { height: _i.height } : {}),
-      }
+      },
     );
 
     imageFragments.push(zyncImageAssetFragmentWithLegacy);
@@ -189,77 +194,42 @@ export async function t2iGenerateImageContentFragments(
 
 /// Private
 
-interface T2ILlmsModelServices {
-  label: string;
-  modelVendorId: ModelVendorId;
-  modelServiceId: DModelsServiceId;
-  hasAnyModels: boolean;
-}
-
-function _findLlmsT2IServices(llms: ReadonlyArray<DLLM>, services: ReadonlyArray<DModelsService>) {
-  return services
-    .filter(s => (s.vId === 'openai' || (T2I_ENABLE_LOCAL_AI && s.vId === 'localai')))
-    .map((s): T2ILlmsModelServices => ({
-      label: s.label,
-      modelVendorId: s.vId,
-      modelServiceId: s.id,
-      hasAnyModels: llms.some(m => m.sId === s.id),
-    }));
-}
-
-
-// Vendor priority system for auto-selection (lower number = higher priority)
-const T2I_VENDOR_PRIORITIES = {
-  openai: 1,    // highest priority (mature, reliable)
-  gemini: 2,    // second (Google Imagen - future)
-  xai: 3,       // third (Grok vision - future reference)
-  localai: 9,   // lowest (experimental)
-} as const;
-
-
-function _getTextToImageProviders(llmsModelServices: T2ILlmsModelServices[]) {
+/**
+ * Build the TextToImageProvider view over the engine instances.
+ * providerId is the engineId - the provider list is a UI/capability projection of the engines.
+ */
+function _getTextToImageProviders(engines: Record<DT2IEngineId, DT2IEngineAny>, servicesWithModels: ReadonlyArray<string>): TextToImageProvider[] {
   const providers: TextToImageProvider[] = [];
 
-  // add providers from model services
-  for (const { modelVendorId, modelServiceId, label, hasAnyModels } of llmsModelServices) {
-    switch (modelVendorId) {
+  for (const engineId in engines) {
+    const engine = engines[engineId];
+    if (engine.isDeleted) continue;
 
-      case 'openai':
-        providers.push({
-          providerId: modelServiceId,
-          label: label,
-          painter: openAIImageModelsCurrentGeneratorName(), // sync this with dMessageUtils.tsx
-          // painter: 'DALL·E',
-          description: 'OpenAI Image generation models',
-          configured: hasAnyModels,
-          vendor: 'openai',
-        });
-        break;
-
-      case 'localai':
-        providers.push({
-          providerId: modelServiceId,
-          label: label,
-          painter: 'LocalAI',
-          description: 'LocalAI\'s models',
-          configured: hasAnyModels,
-          vendor: 'localai',
-        });
-        break;
-
-      default:
-        console.error('Unknown model vendor', modelVendorId);
-        break;
+    const vendor = t2iFindVendor(engine.vendorType);
+    if (!vendor) {
+      console.error('Unknown T2I vendor', engine.vendorType);
+      continue;
     }
-  }
 
-  // Insert other services here if needed (non-LLM/Service based)
-  // ... (e.g. we used to have Prodia here)
+    const serviceId = engine.credentials.type === 'llms-service' ? engine.credentials.serviceId : undefined;
+
+    providers.push({
+      providerId: engine.engineId,
+      modelServiceId: serviceId,
+      vendor: engine.vendorType,
+      priority: vendor.priority,
+      label: engine.label,
+      painter: t2iEngineGeneratorName(engine), // sync this with dMessageUtils.tsx
+      description: vendor.description,
+      // configured: credentials resolve AND the linked service has models loaded
+      configured: t2iAreCredentialsValid(engine.credentials) && (!serviceId || servicesWithModels.includes(serviceId)),
+    });
+  }
 
   // Sort providers by vendor priority (then by label for deterministic ordering)
   return providers.sort((a, b) => {
-    const priorityA = T2I_VENDOR_PRIORITIES[a.vendor] ?? 999;
-    const priorityB = T2I_VENDOR_PRIORITIES[b.vendor] ?? 999;
+    const priorityA = a.priority ?? 999;
+    const priorityB = b.priority ?? 999;
     if (priorityA !== priorityB) return priorityA - priorityB;
     return a.label.localeCompare(b.label);
   });
@@ -267,12 +237,13 @@ function _getTextToImageProviders(llmsModelServices: T2ILlmsModelServices[]) {
 
 function _resolveActiveT2IProvider(userSelectedId: string | null, prioritizedProviders: TextToImageProvider[]): TextToImageProvider | null {
 
-  // if user explicitly chose a provider AND it's configured
+  // if user explicitly chose an engine, respect the choice (even if currently unconfigured)
   if (userSelectedId) {
-    const chosen = prioritizedProviders.find(p => p.providerId === userSelectedId && p.configured);
+    const chosen = prioritizedProviders.find(p => p.providerId === userSelectedId);
     if (chosen) return chosen;
   }
-  
-  // Auto-select: find highest priority configured provider (providers are already sorted)
-  return prioritizedProviders.find(p => p.configured) || null;
+
+  // Auto-select: find highest priority configured provider (providers are already sorted),
+  // falling back to any provider so the configuration UI keeps a focus
+  return prioritizedProviders.find(p => p.configured) || prioritizedProviders[0] || null;
 }

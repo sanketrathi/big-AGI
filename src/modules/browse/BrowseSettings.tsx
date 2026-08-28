@@ -4,7 +4,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { Checkbox, FormControl, FormHelperText, FormLabel, Option, Select, Typography } from '@mui/joy';
 
 import { AlreadySet } from '~/common/components/AlreadySet';
-import { ExternalLink } from '~/common/components/ExternalLink';
+import { ExternalDocsLink } from '~/common/components/ExternalDocsLink';
 import { FormInputKey } from '~/common/components/forms/FormInputKey';
 import { FormLabelStart } from '~/common/components/forms/FormLabelStart';
 import { platformAwareKeystrokes } from '~/common/components/KeyStroke';
@@ -41,9 +41,7 @@ export function BrowseSettings() {
   return <>
 
     <Typography level='body-sm'>
-      Enables downloading of web pages. <ExternalLink href='https://big-agi.com/docs/config-feature-browse'>Learn more</ExternalLink>.<br />
-      <b>Web Search</b> is configured separately and requires a Google API key.
-      {/*Web Browser lets the AI visit and analyze web pages in real-time. <ExternalLink href='https://big-agi.com/docs/config-feature-browse'>Learn more about setup</ExternalLink>.*/}
+      Download and process web pages for analysis. <ExternalDocsLink docPage='self-host-optional-services'>Learn more</ExternalDocsLink>.
     </Typography>
 
     <FormInputKey
@@ -87,7 +85,7 @@ export function BrowseSettings() {
 
     <FormControl disabled>
       <Checkbox size='sm' label='Personas browsing tool' checked={false} onChange={(event) => setEnablePersonaTool(event.target.checked)} />
-      <FormHelperText sx={_styleHelperText}>Coming soon</FormHelperText>
+      <FormHelperText sx={_styleHelperText}>Available in a future release</FormHelperText>
       {/*<FormHelperText sx={_styleHelperText}>Enable loading URLs by Personas</FormHelperText>*/}
     </FormControl>
 

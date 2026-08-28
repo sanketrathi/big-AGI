@@ -1,8 +1,7 @@
 import * as React from 'react';
 
 import { Box, Button, ButtonGroup, CircularProgress, Divider, FormControl, FormLabel, Grid, Input } from '@mui/joy';
-import AccountTreeTwoToneIcon from '@mui/icons-material/AccountTreeTwoTone';
-import ReplayIcon from '@mui/icons-material/Replay';
+import ReplayRoundedIcon from '@mui/icons-material/ReplayRounded';
 import StopOutlinedIcon from '@mui/icons-material/StopOutlined';
 import TelegramIcon from '@mui/icons-material/Telegram';
 
@@ -13,6 +12,7 @@ import { AppBreadcrumbs } from '~/common/components/AppBreadcrumbs';
 import { ChipToggleButton } from '~/common/components/ChipToggleButton';
 import { ConversationsManager } from '~/common/chat-overlay/ConversationsManager';
 import { GoodModal } from '~/common/components/modals/GoodModal';
+import { PhTreeStructure } from '~/common/components/icons/phosphor/PhTreeStructure';
 import { InlineError } from '~/common/components/InlineError';
 import { adjustContentScaling } from '~/common/app.theme';
 import { createDMessageTextContent, messageFragmentsReduceText } from '~/common/stores/chat/chat.message';
@@ -145,6 +145,9 @@ export function DiagramsModal(props: { config: DiagramConfig, onClose: () => voi
 
   const handleCustomInstructionKeyDown = React.useCallback((event: React.KeyboardEvent<HTMLInputElement>) => {
     if (event.key === 'Enter') {
+      // Skip if composing (e.g., CJK input methods) - issue #784
+      if (event.nativeEvent.isComposing)
+        return;
       event.preventDefault();
       void handleGenerateNew();
     }
@@ -287,7 +290,7 @@ export function DiagramsModal(props: { config: DiagramConfig, onClose: () => voi
               // cHandler.setAbortController(null);
               setAbortController(null);
             } : handleGenerateNew}
-            endDecorator={abortController ? <StopOutlinedIcon /> : diagramCode ? <ReplayIcon /> : <AccountTreeTwoToneIcon />}
+            endDecorator={abortController ? <StopOutlinedIcon /> : diagramCode ? <ReplayRoundedIcon /> : <PhTreeStructure />}
             sx={{ minWidth: isMobile ? 160 : 220 }}
           >
             {abortController ? 'Stop' : diagramCode ? 'Regenerate' : 'Generate'}

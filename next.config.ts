@@ -1,4 +1,5 @@
 import type { NextConfig } from 'next';
+import type { WebpackConfigContext } from 'next/dist/server/config-shared';
 import { execSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 
@@ -17,7 +18,7 @@ process.env.NEXT_PUBLIC_BUILD_HASH = (buildHash || '').slice(0, 10);
 process.env.NEXT_PUBLIC_BUILD_PKGVER = JSON.parse('' + readFileSync(new URL('./package.json', import.meta.url))).version;
 process.env.NEXT_PUBLIC_BUILD_TIMESTAMP = new Date().toISOString();
 process.env.NEXT_PUBLIC_DEPLOYMENT_TYPE = process.env.NEXT_PUBLIC_DEPLOYMENT_TYPE || (process.env.VERCEL_ENV ? `vercel-${process.env.VERCEL_ENV}` : 'local'); // Docker or custom, Vercel
-console.log(` 🧠 \x1b[1mbig-AGI\x1b[0m v${process.env.NEXT_PUBLIC_BUILD_PKGVER} (@${process.env.NEXT_PUBLIC_BUILD_HASH})`);
+console.log(` 🧠 \x1b[1mbig-AGI\x1b[0m v${process.env.NEXT_PUBLIC_BUILD_PKGVER} (@${process.env.NEXT_PUBLIC_BUILD_HASH}${process.env.VERCEL_ENV ? `, \x1b[2mV:\x1b[0m${process.env.VERCEL_ENV}` : ''}, \x1b[2mN:\x1b[0m${process.env.NODE_ENV})`);
 
 // Non-default build types
 const buildType =
@@ -29,7 +30,11 @@ buildType && console.log(` 🧠 big-AGI: building for ${buildType}...\n`);
 
 /** @type {import('next').NextConfig} */
 let nextConfig: NextConfig = {
-  reactStrictMode: true,
+  reactStrictMode: !process.env.NO_STRICT_MODE, // default: enabled
+
+  // build-time lint: default ON (a build is the last gate); NO_LINT_BUILD=1 skips the ~15s
+  // typed pass when CI already ran `npm run lint` as its own step
+  eslint: { ignoreDuringBuilds: !!process.env.NO_LINT_BUILD },
 
   // [exports] https://nextjs.org/docs/advanced-features/static-html-export
   ...(buildType && {
@@ -43,11 +48,15 @@ let nextConfig: NextConfig = {
     // trailingSlash: true,
   }),
 
+  // Allow running builds without racing over .next/ - if set takes precedence over the 'dist' above
+  // However note this will cause issues with "include" in tsconfig.json, which assumes 'dist'
+  ...(process.env.AGI_DIST_DIR && { distDir: process.env.AGI_DIST_DIR }),
+
   // [puppeteer] https://github.com/puppeteer/puppeteer/issues/11052
   // NOTE: we may not be needing this anymore, as we use '@cloudflare/puppeteer'
   serverExternalPackages: ['puppeteer-core'],
 
-  webpack: (config: any, { isServer }: { isServer: boolean }) => {
+  webpack: (config: any, { isServer, webpack /*, dev, nextRuntime*/ }: WebpackConfigContext) => {
     // @mui/joy: anything material gets redirected to Joy
     config.resolve.alias['@mui/material'] = '@mui/joy';
 
@@ -57,8 +66,28 @@ let nextConfig: NextConfig = {
       layers: true,
     };
 
-    // fix warnings for async functions in the browser (https://github.com/vercel/next.js/issues/64792)
+    // client-side bundling
     if (!isServer) {
+      /**
+       * AIX client-side
+       * We replace certain server-only modules with client-side mocks, to reuse the exact same imports
+       * while avoiding importing server-only code which would break the build or break at runtime.
+       */
+      const serverToClientMocks: ReadonlyArray<[RegExp, string]> = [
+        [/\/posthog\.server/, '/posthog.client-mock'],
+        [/\/env\.server/, '/env.client-mock'],
+      ];
+      config.plugins = [
+        ...config.plugins,
+        ...serverToClientMocks.map(([pattern, replacement]) =>
+          new webpack.NormalModuleReplacementPlugin(pattern, (resource: any) => {
+            // console.log(' 🧠 [WEBPACK REPLACEMENT]:', resource.request, '->', resource.request.replace(pattern, replacement));
+            resource.request = resource.request.replace(pattern, replacement);
+          }),
+        ),
+      ];
+
+      // cosmetic: fix warnings for (absent!) top-level awaits in the browser (https://github.com/vercel/next.js/issues/64792)
       config.output.environment = { ...config.output.environment, asyncFunction: true };
     }
 
@@ -76,22 +105,14 @@ let nextConfig: NextConfig = {
   skipTrailingSlashRedirect: true, // required to support PostHog trailing slash API requests
   async rewrites() {
     return [
-      {
-        source: '/a/ph/static/:path*',
-        destination: 'https://us-assets.i.posthog.com/static/:path*',
-      },
-      {
-        source: '/a/ph/:path*',
-        destination: 'https://us.i.posthog.com/:path*',
-      },
-      {
-        source: '/a/ph/decide',
-        destination: 'https://us.i.posthog.com/decide',
-      },
-      {
-        source: '/a/ph/flags',
-        destination: 'https://us.i.posthog.com/flags',
-      },
+      { source: '/a/ph/static/:path*', destination: 'https://us-assets.i.posthog.com/static/:path*' },
+      { source: '/a/ph/array/:path*', destination: 'https://us-assets.i.posthog.com/array/:path*' },
+      { source: '/a/ph/:path*', destination: 'https://us.i.posthog.com/:path*' },
+      // Dev tools hub: unified index at /dev (static page in /public/dev/index.html)
+      { source: '/dev', destination: '/dev/index.html' },
+      // Inspect: standalone static dev tools under /public/dev/inspect/*.html (clean URLs, no .html)
+      // The (\w+) constraint excludes paths with a dot, so '/dev/inspect/storage.html' is still served directly.
+      { source: '/dev/inspect/:tool(\\w+)', destination: '/dev/inspect/:tool.html' },
     ];
   },
 
@@ -108,24 +129,24 @@ let nextConfig: NextConfig = {
   // },
 };
 
-// Validate environment variables, if set at build time. Will be actually read and used at runtime.
-import { verifyBuildTimeVars } from '~/server/env';
-verifyBuildTimeVars();
+// Validate environment variables at build time, if required. Server env vars will be actually read and used at runtime (cloud/edge).
+import { env as validateEnv } from '~/server/env.server';
+void validateEnv; // Triggers env validation - throws if required vars are missing
 
 // PostHog error reporting with source maps for production builds
 import { withPostHogConfig } from '@posthog/nextjs-config';
 if (process.env.POSTHOG_API_KEY && process.env.POSTHOG_ENV_ID) {
-  console.log(' 🧠 \x1b[1mbig-AGI\x1b[0m: building with PostHog error tracking and source maps...');
+  console.log(' 🧠 \x1b[1mbig-AGI\x1b[0m: building with PostHog issue reporting and source maps...');
   nextConfig = withPostHogConfig(nextConfig, {
     personalApiKey: process.env.POSTHOG_API_KEY,
     envId: process.env.POSTHOG_ENV_ID,
     host: 'https://us.i.posthog.com', // backtrace upload host
-    verbose: false,
+    logLevel: 'error', // lowered, too noisy
     sourcemaps: {
       enabled: process.env.NODE_ENV === 'production',
       project: 'big-agi',
       version: process.env.NEXT_PUBLIC_BUILD_HASH,
-      deleteAfterUpload: true,
+      deleteAfterUpload: false, // false: leave them in the tree, which would also help debugging of open-source installs
     },
   });
 }

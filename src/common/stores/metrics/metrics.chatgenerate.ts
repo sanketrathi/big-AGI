@@ -1,4 +1,4 @@
-import { DPricingChatGenerate, getLlmCostForTokens, isModelPricingFree } from '~/common/stores/llms/llms.pricing';
+import { DPricingChatGenerate, getLlmCostForTokens, isLLMChatPricingFree } from '~/common/stores/llms/llms.pricing';
 
 
 // configuration
@@ -56,6 +56,7 @@ type MetricsChatGenerateTime = {
 export type MetricsChatGenerateCost_Md = {
   // $c = Cents of USD - NOTE: we chose to use cents to reduce floating point errors
   $c?: number,
+  $cReported?: number,  // Total cost in cents as reported by provider (e.g. Perplexity usage.cost.total_cost)
   $cdCache?: number,
   $code?:
     | 'free'            // generated for free
@@ -121,7 +122,7 @@ export function metricsFinishChatGenerateLg(metrics: DMetricsChatGenerate_Lg | u
 
 export function metricsChatGenerateLgToMd(metrics: DMetricsChatGenerate_Lg): DMetricsChatGenerate_Md {
   const allOptionalKeys: (keyof DMetricsChatGenerate_Md)[] = [
-    '$c', '$cdCache', '$code', // select costs
+    '$c', '$cReported', '$cdCache', '$code', // select costs
     'TIn', 'TCacheRead', 'TCacheWrite', 'TOut', 'TOutR', // select token counts
     'dtAll', 'dtStart', 'vTOutInner', // select token timings/velocities
     'TsR', // stop reason
@@ -155,6 +156,16 @@ export function metricsComputeChatGenerateCostsMd(metrics?: Readonly<DMetricsCha
   if (!metrics)
     return undefined;
 
+  // estimate from the price table, then carry the provider-reported (billed) cost alongside - it survives
+  // even when the estimate can't be computed ('no-pricing', 'partial-price', ...)
+  const costs = _computeCostsFromPricing(metrics, pricing, logLlmRefId);
+  if (metrics.$cReported !== undefined)
+    costs.$cReported = metrics.$cReported;
+  return costs;
+}
+
+function _computeCostsFromPricing(metrics: Readonly<DMetricsChatGenerate_Md>, pricing: DPricingChatGenerate | undefined, logLlmRefId?: string): MetricsChatGenerateCost_Md {
+
   // metrics: token presence
   const inNewTokens = metrics.TIn || 0;
   const inCacheReadTokens = metrics.TCacheRead || 0;
@@ -171,7 +182,7 @@ export function metricsComputeChatGenerateCostsMd(metrics?: Readonly<DMetricsCha
     return { $code: 'no-pricing' };
 
   // pricing: bail if free
-  if (isModelPricingFree(pricing))
+  if (isLLMChatPricingFree(pricing))
     return { $code: 'free' };
 
 

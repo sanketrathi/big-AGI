@@ -10,8 +10,9 @@ import type { DMessageId } from '~/common/stores/chat/chat.message';
 export type AttachmentDraft = {
   readonly id: AttachmentDraftId;
   readonly source: AttachmentDraftSource,
-  label: string;  // what's written in the button, such as a web page `title`
-  ref: string;    // will be used in ```ref\n...``` for instance the web page `url`
+  label: string;  // THE name, and what's written in the button - derived from the source (web page `title`, filename, ...) until the user renames it
+  labelUserSet?: boolean; // set by Rename: `label` is user-owned - conversions derive doc titles and LLM-facing refs from it instead of the source
+  ref: string;    // the source reference (web page `url`, file path, ...) - provenance, not affected by renames
 
   inputLoading: boolean;
   inputError: string | null;
@@ -24,6 +25,16 @@ export type AttachmentDraft = {
   outputsConversionProgress: number | null;
   outputFragments: DMessageAttachmentFragment[];
 
+  // Warnings for poor conversions (e.g. scanned PDF with text extraction rather than OCR)
+  outputWarnings?: string[];
+
+  // Tracks what method was actually used (especially for Auto mode)
+  outputsHeuristic?: {
+    isAuto: boolean;
+    actualConverterId: AttachmentDraftConverterType;
+    explain?: string; // e.g., "42 chars/page detected"
+  };
+
   // metadata: {
   //   creationDate?: Date; // Creation date of the file
   //   modifiedDate?: Date; // Last modified date of the file
@@ -32,6 +43,13 @@ export type AttachmentDraft = {
 };
 
 export type AttachmentDraftId = string;
+
+export type AttachmentCreationOptions = {
+  /** Also attach an image representation of the attachment. Requires Release.Features.ENABLE_TEXT_AND_IMAGES as well. */
+  hintAddImages?: boolean;
+}
+
+export type AttachmentCloudProviderId = 'gdrive' | 'onedrive' | 'dropbox';
 
 
 // 0. draft source (filled at the onset)
@@ -52,6 +70,23 @@ export type AttachmentDraftSource = {
   textPlain?: string;
   textHtml?: string;
 } | {
+  media: 'cloud';
+  origin: AttachmentDraftSourceOriginCloud;
+
+  // auth for fetching
+  accessToken: string;
+  // tokenExpiresAt?: number; // optional for staleness detection, unix ts
+
+  // recipe for fetching
+  provider: AttachmentCloudProviderId;
+  fileId: string;
+  mimeType: string; // cloud-native MIME (e.g., 'application/vnd.google-apps.document')
+
+  // decorative
+  fileName: string;
+  fileSize?: number;
+  webViewLink?: string; // link to view in cloud provider's UI
+} | {
   // special type for attachments thar are references to self (ego, application) objects
   media: 'ego';
   method: 'ego-fragments';
@@ -59,16 +94,18 @@ export type AttachmentDraftSource = {
   egoFragmentsInputData: DraftEgoFragmentsInputData;
 };
 
-export type AttachmentDraftSourceOriginFile = 'camera' | 'screencapture' | 'file-open' | 'clipboard-read' | AttachmentDraftSourceOriginDTO;
+export type AttachmentDraftSourceOriginFile =
+  | 'camera' | 'screencapture'
+  | 'live-feed-camera' | 'live-feed-screen'
+  | 'file-open'
+  | 'clipboard-read'
+  | AttachmentDraftSourceOriginDTO;
 
 export type AttachmentDraftSourceOriginDTO = 'drop' | 'paste';
 
 export type AttachmentDraftSourceOriginUrl = 'input-link' | 'clipboard-read' | AttachmentDraftSourceOriginDTO;
 
-export type AttachmentCreationOptions = {
-  /** Also attach an image representation of the attachment. Requires Release.Features.ENABLE_TEXT_AND_IMAGES as well. */
-  hintAddImages?: boolean;
-}
+export type AttachmentDraftSourceOriginCloud = `picker-${AttachmentCloudProviderId}`;
 
 
 // 1. draft input (loaded from the source)
@@ -135,9 +172,10 @@ export type AttachmentDraftConverter = {
 }
 
 export type AttachmentDraftConverterType =
-  | 'text' | 'rich-text' | 'rich-text-cleaner' | 'rich-text-table'
-  | 'image-original' | 'image-resized-high' | 'image-resized-low' | 'image-ocr' | 'image-to-default'
-  | 'pdf-text' | 'pdf-images' | 'pdf-text-and-images'
+  | 'text' | 'text-cleaner' | 'text-markdown'
+  | 'rich-text' | 'rich-text-cleaner' | 'rich-text-markdown' | 'rich-text-table'
+  | 'image-original' | 'image-resized-high' | 'image-resized-low' | 'image-ocr' | 'image-caption' | 'image-to-default'
+  | 'pdf-auto' | 'pdf-text' | 'pdf-images' | 'pdf-images-ocr' | 'pdf-text-and-images'
   | 'docx-to-html'
   | 'url-page-text' | 'url-page-markdown' | 'url-page-html' | 'url-page-null' | 'url-page-image'
   | 'youtube-transcript' | 'youtube-transcript-simple'
@@ -146,6 +184,11 @@ export type AttachmentDraftConverterType =
 
 
 // 3. Output - this is done via DMessageAttachmentFragment[], to be directly compatible with our data
+
+
+// Actions on attachment drafts
+
+export type AttachmentDraftsAction = 'inline-text' | 'copy-text';
 
 
 /*export type AttachmentDraftPreview = {

@@ -1,18 +1,26 @@
 import * as React from 'react';
 
 import type { SxProps } from '@mui/joy/styles/types';
-import { Chip, ColorPaletteProp, FormControl, IconButton, ListDivider, ListItemDecorator, Option, optionClasses, Select, SelectSlotsAndSlotProps, SvgIconProps, VariantProp } from '@mui/joy';
+import { Chip, ColorPaletteProp, FormControl, IconButton, ListDivider, ListItem, ListItemButton, ListItemDecorator, Option, optionClasses, Select, SelectSlotsAndSlotProps, VariantProp } from '@mui/joy';
+import ArrowForwardRoundedIcon from '@mui/icons-material/ArrowForwardRounded';
 import AutoModeIcon from '@mui/icons-material/AutoMode';
+import BuildCircleIcon from '@mui/icons-material/BuildCircle';
 
-import type { IModelVendor } from '~/modules/llms/vendors/IModelVendor';
+import { LLMVendorIconSprite } from '~/modules/llms/components/LLMVendorIconSprite';
 import { findModelVendor } from '~/modules/llms/vendors/vendors.registry';
-import { llmsGetVendorIcon, LLMVendorIcon } from '~/modules/llms/components/LLMVendorIcon';
 
-import type { DModelDomainId } from '~/common/stores/llms/model.domains.types';
-import { DLLM, DLLMId, LLM_IF_OAI_Reasoning, LLM_IF_Outputs_Audio, LLM_IF_Outputs_Image, LLM_IF_Tools_WebSearch } from '~/common/stores/llms/llms.types';
+import type { DModelsServiceId } from '~/common/stores/llms/llms.service.types';
+import { isLLMChatFree_cached } from '~/common/stores/llms/llms.pricing';
+import { DLLM, DLLMId, getLLMLabel, LLM_IF_OAI_Reasoning, LLM_IF_Outputs_Audio, LLM_IF_Outputs_Image, LLM_IF_Tools_WebSearch } from '~/common/stores/llms/llms.types';
+import { ListItemGroupCollapser } from '~/common/components/ListItemGroupCollapser';
+import { PhGearSixIcon } from '~/common/components/icons/phosphor/PhGearSixIcon';
+import { StarIconUnstyled, StarredNoXL2 } from '~/common/components/StarIcons';
 import { TooltipOutlined } from '~/common/components/TooltipOutlined';
-import { getChatLLMId, llmsStoreActions } from '~/common/stores/llms/store-llms';
-import { optimaOpenModels } from '~/common/layout/optima/useOptima';
+import { findModelsServiceOrNull, getChatLLMId } from '~/common/stores/llms/store-llms';
+import { optimaActions, optimaOpenModels } from '~/common/layout/optima/useOptima';
+import { sortLLMsByServiceLabel } from '~/common/stores/llms/components/llms.dropdown.utils';
+import { useToggleableStringSet } from '~/common/util/hooks/useToggleableStringSet';
+import { useUIPreferencesStore } from '~/common/stores/store-ui';
 import { useVisibleLLMs } from '~/common/stores/llms/llms.hooks';
 
 import { FormLabelStart } from './FormLabelStart';
@@ -23,6 +31,8 @@ const LLM_SELECT_REDUCE_OPTIONS = 10; // optimization: number of options over wh
 const LLM_SELECT_SHOW_REASONING_ICON = false;
 const LLM_TEXT_PLACEHOLDER = 'Models …';
 const LLM_TEXT_CONFIGURE = 'Add Models …';
+const LLM_SPECIAL_CONFIGURE_ID = '_CONF_' as DLLMId; // special id to open the Models panel
+const LLM_SPECIAL_AUTO_ID = '_AUTO_' as DLLMId; // special id used as Select value when the domain is in Auto mode
 
 
 /*export function useLLMSelectGlobalState(): [DLLMId | null, (llmId: DLLMId | null) => void] {
@@ -35,19 +45,43 @@ export function useLLMSelectLocalState(initFromGlobal: boolean): [DLLMId | null,
   } : null);
 }
 
-const llmSelectSx: SxProps = {
-  flex: 1,
-  backgroundColor: 'background.popup',
-  // minWidth: '200',
-} as const;
+const _styles = {
+  select: {
+    flex: 1,
+    backgroundColor: 'background.popup',
+    // minWidth: '200',
+  },
+  chips: {
+    ml: 'auto',
+    backgroundColor: 'background.popup',
+    boxShadow: 'xs',
+  },
+  configButton: {
+    ml: 'auto',
+    my: -0.5,
+    // mr: -0.25,
+    backgroundColor: 'background.popup',
+    boxShadow: 'xs',
+  },
+  listFooter: {
+    // '--ListItem-minHeight': '2.25rem',
+    borderTop: '1px solid',
+    borderTopColor: 'divider',
+    // pb: 0,
+    position: 'sticky',
+    bottom: 0,
+    backgroundColor: 'background.surface',
+    zIndex: 1,
+  },
+  listConfSep: {
+    mb: 0,
+  },
+  listConfigure: {
+    py: 'calc(2 * var(--ListDivider-gap))',
+  },
+} as const satisfies Record<string, SxProps>;
 
-const styleChips: SxProps = {
-  ml: 'auto',
-  backgroundColor: 'background.popup',
-  boxShadow: 'xs',
-} as const;
-
-const _slotProps: SelectSlotsAndSlotProps<false>['slotProps'] = {
+const _slotProps = {
   // see the OptimaBarDropdown.listbox for a well made customization (max-height, max-width, etc.)
   listbox: {
     sx: {
@@ -58,8 +92,9 @@ const _slotProps: SelectSlotsAndSlotProps<false>['slotProps'] = {
       // No need for larger SVG icons here
       // '--Icon-fontSize': 'var(--joy-fontSize-xl2)',
 
-      // No need to remove the gutter
-      // paddingBlock: 0,
+      // remove the gutter from the bottom, which makes the 'appendConfigureModels' option look
+      // good, but makes the default case a bit too close to the bottom
+      paddingBottom: 0,
 
       // v-size: keep the default
       // maxHeight: 'calc(100dvh - 56px - 24px)',
@@ -89,7 +124,7 @@ const _slotProps: SelectSlotsAndSlotProps<false>['slotProps'] = {
       minWidth: '6rem',
     } as const,
   } as const,
-} as const;
+} as const satisfies SelectSlotsAndSlotProps<false>['slotProps'];
 
 
 interface LLMSelectOptions {
@@ -101,33 +136,70 @@ interface LLMSelectOptions {
   disabled?: boolean;
   placeholder?: string;
   isHorizontal?: boolean;
-  autoRefreshDomain?: DModelDomainId;
+  setLlmToAuto?: () => void; // caller-supplied strategy to reset to Auto (e.g. assignDomainModelAuto for domain-backed, or undefined for backends with no Auto concept). When provided, the Auto option/indicator are surfaced.
+  isLlmAuto?: boolean; // when true, render the selected label as "Auto (<resolved name>)" and surface the AutoMode indicator (requires setLlmToAuto)
+  autoModelLabel?: string; // display label of the model Auto resolves to, regardless of the current pin; used to label the Auto option
+  appendConfigureModels?: boolean; // appends a bottom option to open the Models panel
+  showStarFilter?: boolean; // show a button to filter starred models only
 }
 
 /**
  * Select the Model, synced with either Global (Chat) LLM state, or local
  *
  * @param llmId (required) the LLM id
- * @param setLlmId (required) the function to set the LLM id
- * @param options (optional) any array of options
+ * @param setLlmId (required) function to set the LLM id to a specific model (explicit pin)
+ * @param options (required) the options bag. `setLlmToAuto` here is the caller-supplied
+ *        reset-to-Auto strategy: pass it for backends that support Auto (domain-backed hooks
+ *        pass `assignDomainModelAuto`), omit for backends with no Auto concept.
  */
 export function useLLMSelect(
   llmId: undefined | DLLMId | null, // undefined: not set at all, null: has the meaning of no-llm-wanted here
-  setLlmId: (llmId: DLLMId | null) => void,
+  setLlmId: (llmId: DLLMId) => void,
   options: LLMSelectOptions,
-): [DLLM | null, React.JSX.Element | null, React.FunctionComponent<SvgIconProps> | undefined] {
+): [DLLM | null, React.JSX.Element | null] {
+
+  // options
+  const { label, larger = false, disabled = false, placeholder = LLM_TEXT_PLACEHOLDER, isHorizontal = false, isLlmAuto = false, setLlmToAuto, autoModelLabel, appendConfigureModels = false, showStarFilter = false } = options;
 
   // state
   const [controlledOpen, setControlledOpen] = React.useState(false);
+  const { set: collapsedServices, toggle: toggleServiceCollapse } = useToggleableStringSet<DModelsServiceId>();
 
   // external state
-  const _filteredLLMs = useVisibleLLMs(llmId);
+  const starredOnly = useUIPreferencesStore(state => showStarFilter && state.showModelsStarredOnly);
+  // const modelsStarredOnTop = useUIPreferencesStore(state => state.modelsStarredOnTop); // unsupported, this creates some issues with groups I believe
+  const { llms: _filteredLLMs, hasStarred } = useVisibleLLMs(llmId, starredOnly, false);
 
   // derived state
-  const { label, larger = false, disabled = false, placeholder = LLM_TEXT_PLACEHOLDER, isHorizontal = false, autoRefreshDomain } = options;
   const noIcons = false; //smaller;
   const llm = !llmId ? null : _filteredLLMs.find(llm => llm.id === llmId) ?? null;
   const isReasoning = !LLM_SELECT_SHOW_REASONING_ICON ? false : llm?.interfaces?.includes(LLM_IF_OAI_Reasoning) ?? false;
+
+
+  // Scroll preservation: MUI's useSelect auto-scrolls to highlighted item when options change - we want to preserve scroll instead
+
+  const listboxRef = React.useRef<HTMLUListElement>(null);
+
+  const listboxSlotPropsStable = React.useMemo(() => ({
+    ..._slotProps,
+    listbox: { ..._slotProps.listbox, ref: listboxRef },
+  }), []);
+
+  React.useLayoutEffect(() => {
+    // restore scroll after collapse/expand - snapshot before MUI scrolls, restore via double RAF
+    const el = listboxRef.current;
+    if (!el) return;
+    const scrollTop = el.scrollTop;
+    const raf = requestAnimationFrame(() => {
+      // usually works, especially on expansion
+      el.scrollTop = scrollTop;
+      return requestAnimationFrame(() => {
+        // fixes the collapse too
+        el.scrollTop = scrollTop;
+      });
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [collapsedServices]);
 
 
   // memo LLM Options
@@ -135,29 +207,44 @@ export function useLLMSelect(
   const optimizeToSingleVisibleId = (!controlledOpen && _filteredLLMs.length > LLM_SELECT_REDUCE_OPTIONS) ? llmId : null; // id to keep visible when optimizing
 
   const optionsArray = React.useMemo(() => {
+    // sort LLMs alphabetically by service label so vendor groups appear in a stable order (groups remain contiguous because sort is stable on equal keys)
+    const sortedLLMs = sortLLMsByServiceLabel(_filteredLLMs);
+
+    // check if we have multiple services (to show collapsible headers)
+    const hasMultipleServices = sortedLLMs.some((llm, i, arr) => i > 0 && llm.sId !== arr[i - 1].sId);
+
     // create the option items
-    let formerVendor: IModelVendor | null = null;
-    return _filteredLLMs.reduce((acc, llm, _index) => {
+    let prevServiceId: DModelsServiceId | null = null;
+    return sortedLLMs.reduce((acc, llm, _index) => {
 
       if (optimizeToSingleVisibleId && llm.id !== optimizeToSingleVisibleId)
         return acc;
 
-      const vendor = findModelVendor(llm.vId);
-      const vendorChanged = vendor !== formerVendor;
-      if (vendorChanged)
-        formerVendor = vendor;
+      const serviceVendor = findModelVendor(llm.vId);
+      const isServiceCollapsed = hasMultipleServices && collapsedServices.has(llm.sId);
 
-      // add separators if the vendor changed (and more than one vendor)
-      const addSeparator = vendorChanged && formerVendor !== null;
-      if (addSeparator && !optimizeToSingleVisibleId)
-        acc.push(<ListDivider key={'llm-sep-' + llm.id}>{vendor?.name}</ListDivider>);
+      // add collapsible service headers when changing services
+      if (hasMultipleServices && llm.sId !== prevServiceId) {
+        if (!optimizeToSingleVisibleId) {
+          const serviceLabel = findModelsServiceOrNull(llm.sId)?.label || serviceVendor?.name || llm.sId;
+          acc.push(<ListItemGroupCollapser key={'SID-' + llm.sId} id={llm.sId} label={serviceLabel} isCollapsed={isServiceCollapsed} onToggleCollapse={toggleServiceCollapse} />);
+        }
+        prevServiceId = llm.sId;
+      }
+
+      // skip models if service is collapsed (but always show selected model)
+      if (isServiceCollapsed && llm.id !== llmId)
+        return acc;
 
       let features = '';
-      const isNotSymlink = !llm.label.startsWith('🔗');
-      const seemsFree = !!llm.pricing?.chat?._isFree;
+      const isNotSymlink = !llm.label.startsWith('🔗'); // getLLMLabel exception: need access to the base
+      const llmLabel = getLLMLabel(llm);
+      const seemsFree = isLLMChatFree_cached(llm);
       if (isNotSymlink) {
         // check features
         if (seemsFree) features += 'free ';
+        if (llm.isUserClone)
+          features += '➕ '; // is clone
         if (llm.interfaces.includes(LLM_IF_OAI_Reasoning))
           features += '🧠 '; // can reason
         if (llm.interfaces.includes(LLM_IF_Tools_WebSearch))
@@ -168,6 +255,8 @@ export function useLLMSelect(
           features += '🖼️ '; // can draw images
       }
 
+      const showModelOptions = llm.id === llmId && !optimizeToSingleVisibleId;
+
       // the option component
       acc.push(
         <Option
@@ -175,19 +264,37 @@ export function useLLMSelect(
           value={llm.id}
           // Disabled to avoid regenerating the memo too frequently
           // sx={llm.id === llmId ? { fontWeight: 'md' } : undefined}
-          label={llm.label}
+          label={llmLabel}
         >
           {!noIcons && (
             <ListItemDecorator>
-              {llm.userStarred ? '⭐ ' : vendor?.id ? <LLMVendorIcon vendorId={vendor.id} /> : null}
+              {(llm.userStarred && !starredOnly) ? <StarredNoXL2 /> : serviceVendor?.id ? <LLMVendorIconSprite vendorId={serviceVendor.id} /> : null}
             </ListItemDecorator>
           )}
           {/*<Tooltip title={llm.description}>*/}
 
-          <div className='agi-ellipsize'>{llm.label}</div>
+          <div className='agi-ellipsize'>{llmLabel}</div>
 
           {/* Features Chips - sync with `ModelsList.tsx` */}
-          {!!features && <Chip size='sm' color={seemsFree ? 'success' : undefined} variant='plain' sx={styleChips}>{features.trim().replace(' ', ' ')}</Chip>}
+          {!!features && !showModelOptions && <Chip size='sm' color={seemsFree ? 'success' : undefined} variant='plain' sx={_styles.chips}>{features.trim().replace(' ', ' ')}</Chip>}
+
+          {/* Settings button on active model (only when not optimized) */}
+          {showModelOptions && (
+            <TooltipOutlined title='Model Settings'>
+              <IconButton
+                size='sm'
+                // color='neutral'
+                // variant='outlined'
+                onClick={(e) => {
+                  e.stopPropagation();
+                  optimaActions().openModelOptions(llm.id, 'parameters');
+                }}
+                sx={_styles.configButton}
+              >
+                <PhGearSixIcon />
+              </IconButton>
+            </TooltipOutlined>
+          )}
 
           {/*</Tooltip>*/}
           {/*{llm.gen === 'sdxl' && <Chip size='sm' variant='outlined'>XL</Chip>} {llm.label}*/}
@@ -196,49 +303,100 @@ export function useLLMSelect(
 
       return acc;
     }, [] as React.JSX.Element[]);
-  }, [_filteredLLMs, noIcons, optimizeToSingleVisibleId]);
+  }, [_filteredLLMs, collapsedServices, llmId, noIcons, optimizeToSingleVisibleId, starredOnly, toggleServiceCollapse]);
 
 
-  const onSelectChange = React.useCallback((_event: unknown, value: DLLMId | null) => value && setLlmId(value), [setLlmId]);
+  const onSelectChange = React.useCallback((_event: unknown, value: DLLMId | null) => {
+    // special: open the Models panel
+    if (value === LLM_SPECIAL_CONFIGURE_ID) return optimaOpenModels();
+    // special: caller-defined reset-to-Auto strategy (no-op if caller didn't provide one)
+    if (value === LLM_SPECIAL_AUTO_ID) return setLlmToAuto?.();
+    // invoke the explicit-pin setter when we have a non-null id
+    value && setLlmId(value);
+  }, [setLlmId, setLlmToAuto]);
+
 
   const hasNoModels = _filteredLLMs.length === 0;
   const showNoOptions = !optionsArray.length;
 
+  // when in Auto mode AND the caller supports Auto, bind to the sentinel so the Auto option marks as selected
+  const selectValue = showNoOptions ? null
+    : (isLlmAuto && setLlmToAuto ? LLM_SPECIAL_AUTO_ID
+      : llmId ?? null);
+
   // memo Select
   const llmSelectComponent = React.useMemo(() => (
-    <FormControl orientation={(isHorizontal || autoRefreshDomain) ? 'horizontal' : undefined}>
+    <FormControl orientation={(isHorizontal || setLlmToAuto) ? 'horizontal' : undefined}>
       {!!label && <FormLabelStart title={label} sx={/*{ mb: '0.25rem' }*/ undefined} />}
       {/*<Box sx={{ display: 'flex', justifyContent: 'space-between' }}>*/}
-      <Select
+      <Select<DLLMId>
         color={options.color}
         variant={options.variant ?? 'outlined'}
-        value={showNoOptions ? null : llmId ?? null}
+        value={selectValue}
         size={larger ? undefined : 'sm'}
         disabled={disabled}
         onChange={onSelectChange}
         listboxOpen={controlledOpen}
         onListboxOpenChange={hasNoModels ? optimaOpenModels : setControlledOpen}
         placeholder={hasNoModels ? LLM_TEXT_CONFIGURE : placeholder}
-        slotProps={_slotProps}
-        endDecorator={autoRefreshDomain ?
-          <TooltipOutlined title='Auto-select the model'>
-            <IconButton onClick={() => llmsStoreActions().assignDomainModelId(autoRefreshDomain, null)}>
+        slotProps={listboxSlotPropsStable}
+        endDecorator={setLlmToAuto ?
+          <TooltipOutlined title={isLlmAuto ? 'Currently in Auto' : 'Switch to Auto'}>
+            <IconButton color={isLlmAuto ? undefined : 'primary'} variant={isLlmAuto ? undefined : 'solid'} onClick={setLlmToAuto}>
               <AutoModeIcon />
             </IconButton>
           </TooltipOutlined>
           : isReasoning ? '🧠' : undefined}
-        sx={options.sx ?? llmSelectSx}
+        sx={options.sx ?? _styles.select}
       >
+
+        {/* Auto Option - shown only when caller provided a reset-to-Auto strategy */}
+        {setLlmToAuto && !hasNoModels && (
+          <Option key='auto-option' value={LLM_SPECIAL_AUTO_ID} label={
+            <div className='agi-ellipsize'>
+              Auto{autoModelLabel ? <span style={{ opacity: 0.6 }}>: {autoModelLabel}</span> : null}
+            </div>
+          }>
+            <ListItemDecorator><AutoModeIcon /></ListItemDecorator>
+            <div className='agi-ellipsize'>
+              Auto{autoModelLabel ? <span style={{ opacity: 0.6 }}>: {autoModelLabel}</span> : null}
+            </div>
+          </Option>
+        )}
+
+        {/* Model Options */}
         {optionsArray}
+
+        {/* Models Modal Dialog Option */}
+        {appendConfigureModels && !optimizeToSingleVisibleId && !hasNoModels && !showNoOptions && <ListDivider key='cm-sep' sx={_styles.listConfSep} />}
+        {appendConfigureModels && !optimizeToSingleVisibleId && !hasNoModels && (
+          <Option key='cm-option' variant='soft' value={LLM_SPECIAL_CONFIGURE_ID} sx={_styles.listConfigure}>
+            <ListItemDecorator><BuildCircleIcon color='success' /></ListItemDecorator>
+            Models
+            <ArrowForwardRoundedIcon sx={{ ml: 'auto', fontSize: 'xl' }} />
+          </Option>
+        )}
+
+        {/* Star Filter Toggle - shown at the top of the list only if visible */}
+        {showStarFilter && hasStarred && !optimizeToSingleVisibleId && (
+          <ListItem key='star-filter-toggle' sx={_styles.listFooter}>
+            <ListItemButton
+              variant={starredOnly ? 'soft' : 'plain'}
+              onClick={useUIPreferencesStore.getState().toggleShowModelsStarredOnly}
+              // sx={{ backgroundColor: 'background.surface', position: 'sticky', top: 0, zIndex: 1 }}
+            >
+              <ListItemDecorator>
+                <StarIconUnstyled isStarred={starredOnly} />
+              </ListItemDecorator>
+              {starredOnly ? 'Showing: Starred' : 'Showing: All'}
+            </ListItemButton>
+          </ListItem>
+        )}
+
       </Select>
       {/*</Box>*/}
     </FormControl>
-  ), [autoRefreshDomain, controlledOpen, disabled, hasNoModels, isHorizontal, isReasoning, label, larger, llmId, onSelectChange, options.color, options.sx, options.variant, optionsArray, placeholder, showNoOptions]);
+  ), [appendConfigureModels, autoModelLabel, controlledOpen, disabled, hasNoModels, hasStarred, isHorizontal, isLlmAuto, isReasoning, label, larger, listboxSlotPropsStable, onSelectChange, optimizeToSingleVisibleId, options.color, options.sx, options.variant, optionsArray, placeholder, selectValue, setLlmToAuto, showNoOptions, showStarFilter, starredOnly]);
 
-  // Memo the vendor icon for the chat LLM
-  const chatLLMVendorIconFC = React.useMemo(() => {
-    return !llm?.vId ? undefined : llmsGetVendorIcon(llm.vId);
-  }, [llm?.vId]);
-
-  return [llm, llmSelectComponent, chatLLMVendorIconFC];
+  return [llm, llmSelectComponent];
 }

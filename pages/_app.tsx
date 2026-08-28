@@ -1,11 +1,16 @@
 import * as React from 'react';
 import Head from 'next/head';
+import dynamic from 'next/dynamic';
 import { MyAppProps } from 'next/app';
-import { Analytics as VercelAnalytics } from '@vercel/analytics/next';
-import { SpeedInsights as VercelSpeedInsights } from '@vercel/speed-insights/next';
 
 import { Brand } from '~/common/app.config';
 import { apiQuery } from '~/common/util/trpc.client';
+
+
+// [server-client-safe] dynamic imports to avoid webpack bundling issues with next/navigation
+const VercelAnalytics = dynamic(() => import('@vercel/analytics/next').then(mod => mod.Analytics), { ssr: false });
+// const VercelSpeedInsights = dynamic(() => import('@vercel/speed-insights/next').then(mod => mod.SpeedInsights), { ssr: false });
+
 
 import 'katex/dist/katex.min.css';
 import '~/common/styles/CodePrism.css';
@@ -19,11 +24,12 @@ import { Is } from '~/common/util/pwaUtils';
 import { OverlaysInsert } from '~/common/layout/overlays/OverlaysInsert';
 import { ProviderBackendCapabilities } from '~/common/providers/ProviderBackendCapabilities';
 import { ProviderBootstrapLogic } from '~/common/providers/ProviderBootstrapLogic';
-import { ProviderSingleTab } from '~/common/providers/ProviderSingleTab';
+import { ProviderSingleTab } from '~/common/providers/single-tab/ProviderSingleTab';
 import { ProviderTheming } from '~/common/providers/ProviderTheming';
 import { SnackbarInsert } from '~/common/components/snackbar/SnackbarInsert';
 import { hasGoogleAnalytics, OptionalGoogleAnalytics } from '~/common/components/3rdparty/GoogleAnalytics';
 import { hasPostHogAnalytics, OptionalPostHogAnalytics } from '~/common/components/3rdparty/PostHogAnalytics';
+import { OptionalUrlTrackingCleaner } from '~/common/components/3rdparty/UrlTrackingCleaner';
 
 
 const Big_AGI_App = ({ Component, emotionCache, pageProps }: MyAppProps) => {
@@ -55,10 +61,12 @@ const Big_AGI_App = ({ Component, emotionCache, pageProps }: MyAppProps) => {
       </ProviderSingleTab>
     </ProviderTheming>
 
-    {Is.Deployment.VercelFromFrontend && <VercelAnalytics debug={false} />}
-    {Is.Deployment.VercelFromFrontend && <VercelSpeedInsights debug={false} sampleRate={1 / 2} />}
     {hasGoogleAnalytics && <OptionalGoogleAnalytics />}
     {hasPostHogAnalytics && <OptionalPostHogAnalytics />}
+    <OptionalUrlTrackingCleaner />
+
+    {Is.Deployment.VercelFromFrontend && <VercelAnalytics debug={false} />}
+    {/*{Is.Deployment.VercelFromFrontend && <VercelSpeedInsights debug={false} sampleRate={1 / 2} />}*/}
 
   </>;
 };

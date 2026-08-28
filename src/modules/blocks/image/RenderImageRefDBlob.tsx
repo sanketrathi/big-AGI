@@ -39,10 +39,13 @@ export function RenderImageRefDBlob(props: {
 
   // hook: async image regeneration
 
-  const { label: imageItemLabel, origin: imageItemOrigin } = imageItem || {};
+  const { /*label: imageItemLabel,*/ origin: imageItemOrigin } = imageItem || {};
   // const _recreationWidth = imageItemMetadata?.width || props.imageWidth;
   // const _recreationHeight = imageItemMetadata?.height || props.imageHeight;
-  const recreationPrompt = ((imageItemOrigin?.ot === 'generated') ? imageItemOrigin.prompt : undefined) || imageItemLabel || props.imageAltText;
+
+  // NOTE: we used to fallback to the Label, but often the label is not the regeneration prompt... (e.g. "Gemini Generated Image")
+  // const recreationPrompt = ((imageItemOrigin?.ot === 'generated') ? imageItemOrigin.prompt : undefined) || imageItemLabel || props.imageAltText;
+  const recreationPrompt = (imageItemOrigin?.ot === 'generated') ? (imageItemOrigin.prompt || undefined) : undefined;
 
   const { isFetching: isRegenerating, refetch: handleImageRegenerate } = useQuery({
     enabled: false,
@@ -51,7 +54,7 @@ export function RenderImageRefDBlob(props: {
       if (signal?.aborted || !recreationPrompt || !props.onReplaceFragment) return;
       // NOTE: we shall prevent this operation from happening if the image was not fully generated from the prompt, but also had images
       // const recreationImages = [];
-      const newImageFragments = await t2iGenerateImageContentFragments(null, recreationPrompt, [], 1, 'app-chat');
+      const newImageFragments = await t2iGenerateImageContentFragments(null, recreationPrompt, [], 1, 'app-chat', { t2iContextName: 'image-regenerate', abortSignal: signal });
       if (newImageFragments.length === 1)
         props.onReplaceFragment?.(newImageFragments[0]);
     },

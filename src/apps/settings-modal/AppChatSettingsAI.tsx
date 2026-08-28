@@ -3,21 +3,20 @@ import * as React from 'react';
 import { FormControl, ListDivider, Switch } from '@mui/joy';
 import CodeIcon from '@mui/icons-material/Code';
 import EditRoundedIcon from '@mui/icons-material/EditRounded';
-import EngineeringIcon from '@mui/icons-material/Engineering';
 import WarningRoundedIcon from '@mui/icons-material/WarningRounded';
 
 import type { DModelDomainId } from '~/common/stores/llms/model.domains.types';
+import { AIVndAntInlineFilesPolicy, useAIPreferencesStore } from '~/common/stores/store-ai';
 import { FormLabelStart } from '~/common/components/forms/FormLabelStart';
 import { FormSelectControl, FormSelectOption } from '~/common/components/forms/FormSelectControl';
 import { useLLMSelect } from '~/common/components/forms/useLLMSelect';
-import { useLabsDevMode } from '~/common/stores/store-ux-labs';
 import { useModelDomain } from '~/common/stores/llms/hooks/useModelDomain';
 
-import type { TokenCountingMethod } from '../chat/store-app-chat';
+import type { ChatThinkingPolicy, TokenCountingMethod } from '../chat/store-app-chat';
 import { useChatAutoAI } from '../chat/store-app-chat';
 
 
-const _keepThinkingBlocksOptions: FormSelectOption<'all' | 'last-only'>[] = [
+const _keepThinkingBlocksOptions: FormSelectOption<ChatThinkingPolicy>[] = [
   {
     value: 'last-only',
     label: 'Most Recent',
@@ -28,6 +27,17 @@ const _keepThinkingBlocksOptions: FormSelectOption<'all' | 'last-only'>[] = [
     label: 'Preserve All',
     description: 'Keep all traces',
   },
+  {
+    value: 'discard-all',
+    label: 'Discard All',
+    description: 'May reduce quality',
+  },
+] as const;
+
+const _vndAntInlineFilesOptions: FormSelectOption<AIVndAntInlineFilesPolicy>[] = [
+  { value: 'off', label: 'Show', description: 'Keep as links' },
+  { value: 'inline-file', label: 'Embed', description: 'Default, embed in chat' },
+  { value: 'inline-file-and-delete', label: 'Embed + Free', description: 'Embed, then free' },
 ] as const;
 
 const _tokenCountingMethodOptions: FormSelectOption<TokenCountingMethod>[] = [
@@ -52,8 +62,13 @@ function FormControlDomainModel(props: {
 }) {
 
   // external state
-  const { domainModelId: fastModelId, assignDomainModelId: setFastModelId } = useModelDomain(props.domainId);
-  const [_llm, llmComponent] = useLLMSelect(fastModelId, setFastModelId, { label: '', autoRefreshDomain: props.domainId });
+  const { domainModelId, assignDomainModelId, assignDomainModelAuto, resolvedModelIsAuto, autoModelLabel } = useModelDomain(props.domainId);
+  const [_llm, llmComponent] = useLLMSelect(domainModelId, assignDomainModelId, {
+    label: '',
+    setLlmToAuto: assignDomainModelAuto,
+    isLlmAuto: resolvedModelIsAuto,
+    autoModelLabel,
+  });
 
   return (
     <FormControl orientation='horizontal' sx={{ justifyContent: 'space-between' }}>
@@ -76,11 +91,10 @@ export function AppChatSettingsAI() {
     autoSuggestHTMLUI, setAutoSuggestHTMLUI,
     // autoSuggestQuestions, setAutoSuggestQuestions,
     autoTitleChat, setAutoTitleChat,
-    chatKeepLastThinkingOnly, setChatKeepLastThinkingOnly,
+    chatThinkingPolicy, setChatThinkingPolicy,
     tokenCountingMethod, setTokenCountingMethod,
   } = useChatAutoAI();
-
-  const labsDevMode = useLabsDevMode();
+  const vndAntInlineFiles = useAIPreferencesStore(state => state.vndAntInlineFiles);
 
   const showModelIcons = false; // useUIComplexityMode() === 'extra';
 
@@ -129,14 +143,12 @@ export function AppChatSettingsAI() {
       </>}
     />
 
-    {labsDevMode && (
-      <FormControlDomainModel
-        domainId='primaryChat'
-        title={<><EngineeringIcon color='warning' sx={{ fontSize: 'lg', mr: 0.5, mb: 0.25 }} />Last used model</>}
-        description='Chat fallback model'
-        tooltip='The last used chat model, used as default for new conversations. This is a develoment setting used to test out auto-detection of the most fitting initial chat model.'
-      />
-    )}
+    <FormControlDomainModel
+      domainId='imageCaption'
+      title='Vision model'
+      description='Image captioning'
+      tooltip='Vision model used to generate text descriptions of images when the Caption (Text) attachment option is selected.'
+    />
 
     <FormSelectControl
       title='Token Counting'
@@ -144,16 +156,30 @@ export function AppChatSettingsAI() {
       options={_tokenCountingMethodOptions}
       value={tokenCountingMethod}
       onChange={setTokenCountingMethod}
-      selectSx={{ minWidth: 140 }}
     />
 
     <FormSelectControl
       title='Reasoning traces'
-      tooltip='Controls how AI thinking/reasoning blocks are kept in your chat history. Keeping only in the last message (default) reduces clutter.'
+      tooltip='Controls how AI thinking/reasoning blocks are kept in your chat history. "Most Recent" keeps only the last message traces (default). "Discard All" removes all traces after each response, which may reduce multi-turn quality with some providers.'
       options={_keepThinkingBlocksOptions}
-      value={chatKeepLastThinkingOnly ? 'last-only' : 'all'}
-      onChange={(value) => setChatKeepLastThinkingOnly(value === 'last-only')}
-      selectSx={{ minWidth: 140 }}
+      value={chatThinkingPolicy}
+      onChange={setChatThinkingPolicy}
+    />
+
+    <FormSelectControl<AIVndAntInlineFilesPolicy>
+      title='Anthropic Files'
+      tooltip={<>
+        When Claude uses tools like code execution, it may produce text and image files stored in Anthropic&apos;s File API. This setting controls whether Big-AGI should automatically download and embed them in the chat.
+        <ul>
+          <li><b>Show</b>: keep as references.</li>
+          <li><b>Embed</b>: download and embed text/images (default).</li>
+          <li><b>Embed + Free</b>: embed, then delete from Anthropic to free storage.</li>
+        </ul>
+        Only affects Anthropic models.
+      </>}
+      options={_vndAntInlineFilesOptions}
+      value={vndAntInlineFiles}
+      onChange={useAIPreferencesStore.getState().setVndAntInlineFiles}
     />
 
     <ListDivider inset='gutter'>Automatic AI Functions</ListDivider>

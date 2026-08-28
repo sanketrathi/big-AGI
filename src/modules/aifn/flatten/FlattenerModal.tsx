@@ -2,7 +2,7 @@ import * as React from 'react';
 
 import { Alert, Box, Button, CircularProgress, Divider, FormControl, FormLabel, IconButton, List, ListDivider, ListItem, ListItemButton, ListItemContent, ListItemDecorator, Typography } from '@mui/joy';
 import ForkRightIcon from '@mui/icons-material/ForkRight';
-import ReplayIcon from '@mui/icons-material/Replay';
+import ReplayRoundedIcon from '@mui/icons-material/ReplayRounded';
 
 import { useStreamChatText } from '~/modules/aifn/useStreamChatText';
 
@@ -12,6 +12,7 @@ import { DConversationId } from '~/common/stores/chat/chat.conversation';
 import { GoodModal } from '~/common/components/modals/GoodModal';
 import { InlineTextarea } from '~/common/components/InlineTextarea';
 import { createDMessageTextContent, DMessage, messageFragmentsReduceText } from '~/common/stores/chat/chat.message';
+import { getLLMLabel } from '~/common/stores/llms/llms.types';
 import { useFormRadioLlmType } from '~/common/components/forms/useFormRadioLlmType';
 
 import { FLATTEN_PROFILES, FlattenStyleType } from './flatten.data';
@@ -117,7 +118,7 @@ export function FlattenerModal(props: {
       return setErrorMessage('No style selected');
 
     setSelectedStyle(flattenStyle);
-    setSelectedLLMLabel(llm.label);
+    setSelectedLLMLabel(getLLMLabel(llm));
     setErrorMessage(null);
 
     // start (auto-abort previous and at unmount)
@@ -184,7 +185,7 @@ export function FlattenerModal(props: {
             {!!streamError && <Typography>LLM issue: {streamError}</Typography>}
           </Alert>
           <IconButton variant='solid' color='danger' onClick={handleErrorRetry}>
-            <ReplayIcon />
+            <ReplayRoundedIcon />
           </IconButton>
         </Box>}
 
@@ -195,7 +196,7 @@ export function FlattenerModal(props: {
               variant={isError ? 'solid' : 'plain'} color={isError ? 'danger' : 'primary'}
               onClick={handleErrorRetry}
             >
-              <ReplayIcon />
+              <ReplayRoundedIcon />
             </IconButton>
 
             <Button variant='outlined' onClick={() => setConfirmOverwrite(true)} sx={{ ml: 'auto' }}>

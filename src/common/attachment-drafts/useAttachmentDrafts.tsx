@@ -3,6 +3,7 @@ import { useShallow } from 'zustand/react/shallow';
 import type { FileWithHandle } from 'browser-fs-access';
 
 import { addSnackbar } from '~/common/components/snackbar/useSnackbarsStore';
+import { isYouTubeDomainURL } from '~/modules/youtube/youtube.utils';
 import { asValidURL } from '~/common/util/urlUtils';
 import { getClipboardItems } from '~/common/util/clipboardUtils';
 
@@ -12,8 +13,9 @@ import type { DMessageId } from '~/common/stores/chat/chat.message';
 import { getAllFilesFromDirectoryRecursively, getDataTransferFilesOrPromises } from '~/common/util/fileSystemUtils';
 import { useChatAttachmentsStore } from '~/common/chat-overlay/store-perchat_vanilla';
 
-import type { AttachmentDraftSourceOriginDTO, AttachmentDraftSourceOriginFile, AttachmentDraftSourceOriginUrl } from './attachment.types';
+import type { AttachmentDraftSource, AttachmentDraftSourceOriginDTO, AttachmentDraftSourceOriginFile, AttachmentDraftSourceOriginUrl } from './attachment.types';
 import type { AttachmentDraftsStoreApi } from './store-attachment-drafts_slice';
+import { AttachmentInputEnhancersOptions, attachmentEnhancersInterceptText } from './attachment.enhancers';
 
 
 // enable to debug operations
@@ -26,14 +28,22 @@ function notifyOnlyImages(item: any) {
 }
 
 
+export type AttachmentStoreCloudInput = Omit<Extract<AttachmentDraftSource, { media: 'cloud' }>, 'media' | 'origin'>;
+
+
+/** Inferred return type - used by composable source handler hooks. */
+export type AttachmentDraftsApi = ReturnType<typeof useAttachmentDrafts>;
+
+
 /**
  * @param attachmentsStoreApi A Per-Chat or standalone Attachment Drafts store.
  * @param enableLoadURLsOnPaste Only used if invoking attachAppendDataTransfer or attachAppendClipboardItems.
  * @param hintAddImages Attach an additional image representation of the attachment; only if Release.Features.ENABLE_TEXT_AND_IMAGES.
  * @param onFilterAGIFile If defined, run this async function on '.agi.json' files to decide whether to load them (if returns true) or attach them (if returns false).
  * @param filterOnlyImages If true, only image attachments are allowed.
+ * @param enhancersOptions If defined, input enhancers intercept single-line pasted/dropped text BEFORE the URL/text branches, adding a pending part instead of attaching.
  */
-export function useAttachmentDrafts(attachmentsStoreApi: AttachmentDraftsStoreApi | null, enableLoadURLsOnPaste: boolean, hintAddImages: boolean, onFilterAGIFile?: (file: File) => Promise<boolean>, filterOnlyImages?: boolean) {
+export function useAttachmentDrafts(attachmentsStoreApi: AttachmentDraftsStoreApi | null, enableLoadURLsOnPaste: boolean, hintAddImages: boolean, onFilterAGIFile?: (file: File) => Promise<boolean>, filterOnlyImages?: boolean, enhancersOptions?: AttachmentInputEnhancersOptions) {
 
   // state
   const { _createAttachmentDraft, attachmentDrafts, attachmentsRemoveAll, attachmentsTakeAllFragments, attachmentsTakeFragmentsByType } = useChatAttachmentsStore(attachmentsStoreApi, useShallow(state => ({
@@ -79,6 +89,14 @@ export function useAttachmentDrafts(attachmentsStoreApi: AttachmentDraftsStoreAp
     if (!validUrl)
       return false;
 
+    // [YouTube] never load as a web page: transcript scraping and the browse loader are both dead
+    // ends there - video-capable models take these as native video parts via the composer enhancer
+    if (isYouTubeDomainURL(validUrl)) {
+      if (origin === 'input-link')
+        addSnackbar({ key: 'attach-yt-decline', message: 'YouTube links cannot be attached as web pages. Paste the link in the message to share the video instead.', type: 'precondition-fail' });
+      return false;
+    }
+
     // only-images: ignore URLs as they are not direct images in this flow
     if (filterOnlyImages) {
       notifyOnlyImages(url);
@@ -93,7 +111,7 @@ export function useAttachmentDrafts(attachmentsStoreApi: AttachmentDraftsStoreAp
   /**
    * Append data transfer to the attachments.
    */
-  const attachAppendDataTransfer = React.useCallback(async (dt: DataTransfer, method: AttachmentDraftSourceOriginDTO, attachText: boolean): Promise<'as_files' | 'as_url' | 'as_text' | false> => {
+  const attachAppendDataTransfer = React.useCallback(async (dt: DataTransfer, method: AttachmentDraftSourceOriginDTO, attachText: boolean): Promise<'as_files' | 'delegate_pending' | 'as_url' | 'as_text' | false> => {
 
     // https://github.com/enricoros/big-AGI/issues/286
     const textHtml = dt.getData('text/html') || '';
@@ -161,9 +179,23 @@ export function useAttachmentDrafts(attachmentsStoreApi: AttachmentDraftsStoreAp
 
           // attach file with handle
           case 'file':
-            const fileWithHandle = await fileSystemHandle.getFile() as FileWithHandle;
-            fileWithHandle.handle = fileSystemHandle;
-            await attachAppendFile(method, fileWithHandle, overrideFileNames[fIdx]);
+            try {
+              const fileWithHandle = await fileSystemHandle.getFile() as FileWithHandle;
+              fileWithHandle.handle = fileSystemHandle;
+              await attachAppendFile(method, fileWithHandle, overrideFileNames[fIdx]);
+            } catch (error: any) {
+              // #845 - Handle NotAllowedError from Edge 141+ and other browsers with strict file permissions
+              if (error?.name === 'NotAllowedError') {
+                console.warn('[Attachments] File access denied, skipping file:', fileSystemHandle.name, error);
+                addSnackbar({
+                  key: 'attach-permission-denied',
+                  message: 'File access denied. Please try attaching again.',
+                  type: 'issue',
+                  overrides: { autoHideDuration: 3000 },
+                });
+              } else
+                console.error('[Attachments] Error accessing file:', fileSystemHandle.name, error);
+            }
             break;
 
           // attach all files in a directory as files with handles
@@ -182,14 +214,23 @@ export function useAttachmentDrafts(attachmentsStoreApi: AttachmentDraftsStoreAp
       return 'as_files';
     }
 
-    // attach as URL
+    // input enhancers: consume recognized single-line text (e.g. a video URL) as a PENDING PART,
+    // bypassing the attachment pipeline entirely - runs before the URL branch and does not
+    // depend on the browse capability
     const textPlain = dt.getData('text/plain') || '';
+    if (textPlain && !filterOnlyImages) {
+      const pendingPart = attachmentEnhancersInterceptText(enhancersOptions, textPlain);
+      if (pendingPart) {
+        enhancersOptions!.onEnhancerAddPendingPart(pendingPart);
+        return 'delegate_pending';
+      }
+    }
+
+    // attach as URL (synchronous decline, e.g. YouTube URLs, falls through as text)
     if (textPlain && enableLoadURLsOnPaste) {
       const textPlainUrl = asValidURL(textPlain);
-      if (textPlainUrl) {
-        void attachAppendUrl(method, textPlainUrl, textPlain);
+      if (textPlainUrl && attachAppendUrl(method, textPlainUrl, textPlain) !== false)
         return 'as_url';
-      }
     }
 
     // attach as Text/Html (further conversion, e.g. to markdown is done later)
@@ -213,7 +254,7 @@ export function useAttachmentDrafts(attachmentsStoreApi: AttachmentDraftsStoreAp
 
     // did not attach anything from this data transfer
     return false;
-  }, [_createAttachmentDraft, attachAppendFile, attachAppendUrl, enableLoadURLsOnPaste, filterOnlyImages, hintAddImages]);
+  }, [_createAttachmentDraft, attachAppendFile, attachAppendUrl, enableLoadURLsOnPaste, enhancersOptions, filterOnlyImages, hintAddImages]);
 
   /**
    * Append clipboard items to the attachments.
@@ -238,7 +279,11 @@ export function useAttachmentDrafts(attachmentsStoreApi: AttachmentDraftsStoreAp
     for (const clipboardItem of clipboardItems) {
 
       // https://github.com/enricoros/big-AGI/issues/286
-      const textHtml = clipboardItem.types.includes('text/html') ? await clipboardItem.getType('text/html').then(blob => blob.text()) : '';
+      const textHtml = clipboardItem.types.includes('text/html')
+        ? await clipboardItem.getType('text/html')
+          .then(blob => blob?.text() ?? '')
+          .catch(() => '')
+        : '';
       const heuristicBypassImage = textHtml.startsWith('<table ');
 
       if (ATTACHMENTS_DEBUG_INTAKE)
@@ -269,15 +314,26 @@ export function useAttachmentDrafts(attachmentsStoreApi: AttachmentDraftsStoreAp
       }
 
       // get the Plain text
-      const textPlain = clipboardItem.types.includes('text/plain') ? await clipboardItem.getType('text/plain').then(blob => blob.text()) : '';
+      const textPlain = clipboardItem.types.includes('text/plain')
+        ? await clipboardItem.getType('text/plain')
+          .then(blob => blob?.text() ?? '')
+          .catch(() => '')
+        : '';
 
-      // attach as URL
-      if (textPlain && enableLoadURLsOnPaste) {
-        const textPlainUrl = asValidURL(textPlain);
-        if (textPlainUrl) {
-          void attachAppendUrl('clipboard-read', textPlainUrl, textPlain);
+      // input enhancers: consume recognized single-line text as a pending part (see attachAppendDataTransfer)
+      if (textPlain) {
+        const pendingPart = attachmentEnhancersInterceptText(enhancersOptions, textPlain);
+        if (pendingPart) {
+          enhancersOptions!.onEnhancerAddPendingPart(pendingPart);
           continue;
         }
+      }
+
+      // attach as URL (synchronous decline, e.g. YouTube URLs, falls through as text)
+      if (textPlain && enableLoadURLsOnPaste) {
+        const textPlainUrl = asValidURL(textPlain);
+        if (textPlainUrl && attachAppendUrl('clipboard-read', textPlainUrl, textPlain) !== false)
+          continue;
       }
 
       // attach as Text
@@ -297,7 +353,28 @@ export function useAttachmentDrafts(attachmentsStoreApi: AttachmentDraftsStoreAp
 
       console.warn('Clipboard item has no text/html or text/plain item.', clipboardItem.types, clipboardItem);
     }
-  }, [_createAttachmentDraft, attachAppendFile, attachAppendUrl, enableLoadURLsOnPaste, filterOnlyImages, hintAddImages]);
+  }, [_createAttachmentDraft, attachAppendFile, attachAppendUrl, enableLoadURLsOnPaste, enhancersOptions, filterOnlyImages, hintAddImages]);
+
+  /**
+   * Append a cloud file (Google Drive, OneDrive, etc.) to the attachments.
+   * This is the entry point for cloud file picker integrations.
+   */
+  const attachAppendCloudFile = React.useCallback((cloudFile: AttachmentStoreCloudInput) => {
+    if (ATTACHMENTS_DEBUG_INTAKE)
+      console.log('attachAppendCloudFile', cloudFile);
+
+    // only-images: ignore cloud files as they may not be images
+    if (filterOnlyImages && !cloudFile.mimeType.startsWith('image/')) {
+      notifyOnlyImages(cloudFile);
+      return Promise.resolve();
+    }
+
+    return _createAttachmentDraft({
+      media: 'cloud',
+      origin: `picker-${cloudFile.provider}`,
+      ...cloudFile,
+    }, { hintAddImages });
+  }, [_createAttachmentDraft, filterOnlyImages, hintAddImages]);
 
   /**
    * Append ego content to the attachments.
@@ -326,6 +403,7 @@ export function useAttachmentDrafts(attachmentsStoreApi: AttachmentDraftsStoreAp
 
     // create drafts
     attachAppendClipboardItems,
+    attachAppendCloudFile,
     attachAppendDataTransfer,
     attachAppendEgoFragments,
     attachAppendFile,

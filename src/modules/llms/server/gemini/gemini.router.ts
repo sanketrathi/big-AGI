@@ -1,84 +1,58 @@
 import * as z from 'zod/v4';
-import { env } from '~/server/env';
 
-import packageJson from '../../../../../package.json';
+import { createTRPCRouter, edgeProcedure } from '~/server/trpc/trpc.server';
+import { fetchJsonOrTRPCThrow, fetchResponseOrTRPCThrow } from '~/server/trpc/trpc.router.fetchers';
 
-import { createTRPCRouter, publicProcedure } from '~/server/trpc/trpc.server';
-import { fetchJsonOrTRPCThrow } from '~/server/trpc/trpc.router.fetchers';
-
-import { GeminiWire_API_Models_List, GeminiWire_Safety } from '~/modules/aix/server/dispatch/wiretypes/gemini.wiretypes';
+import { convert_UInt8Array_To_Base64 } from '~/common/util/blobUtils';
 
 import { ListModelsResponse_schema } from '../llm.server.types';
-import { geminiDevCheckForParserMisses_DEV, geminiDevCheckForSuperfluousModels_DEV, geminiFilterModels, geminiModelsAddVariants, geminiModelToModelDescription, geminiSortModels } from './gemini.models';
-import { fixupHost } from '~/modules/llms/server/openai/openai.router';
+import { listModelsRunDispatch } from '../listModels.dispatch';
 
-
-// Default hosts
-const DEFAULT_GEMINI_HOST = 'https://generativelanguage.googleapis.com';
+import { geminiAccess, geminiAccessSchema } from './gemini.access';
 
 
 // Mappers
 
-export function geminiAccess(access: GeminiAccessSchema, modelRefId: string | null, apiPath: string, useV1Alpha: boolean): { headers: HeadersInit, url: string } {
+// async function geminiGET<TOut extends object>(access: GeminiAccessSchema, modelRefId: string | null, apiPath: string /*, signal?: AbortSignal*/, useV1Alpha: boolean): Promise<TOut> {
+//   const { headers, url } = geminiAccess(access, modelRefId, apiPath, useV1Alpha);
+//   return await fetchJsonOrTRPCThrow<TOut>({ url, headers, name: 'Gemini' });
+// }
 
-  const geminiHost = fixupHost(access.geminiHost || DEFAULT_GEMINI_HOST, apiPath);
-  let geminiKey = access.geminiKey || env.GEMINI_API_KEY || '';
-
-  // multi-key with random selection - https://github.com/enricoros/big-AGI/issues/653
-  if (geminiKey.includes(',')) {
-    const multiKeys = geminiKey
-      .split(',')
-      .map(key => key.trim())
-      .filter(Boolean);
-    geminiKey = multiKeys[Math.floor(Math.random() * multiKeys.length)];
-  }
-
-  // update model-dependent paths
-  if (apiPath.includes('{model=models/*}')) {
-    if (!modelRefId)
-      throw new Error(`geminiAccess: modelRefId is required for ${apiPath}`);
-    apiPath = apiPath.replace('{model=models/*}', modelRefId);
-  }
-
-  // [Gemini, 2025-01-23] CoT support - requires `v1alpha` Gemini API
-  if (useV1Alpha)
-    apiPath = apiPath.replaceAll('v1beta', 'v1alpha');
-
-  return {
-    headers: {
-      'Content-Type': 'application/json',
-      'x-goog-api-client': `big-agi/${packageJson['version'] || '1.0.0'}`,
-      'x-goog-api-key': geminiKey,
-    },
-    url: geminiHost + apiPath,
-  };
-}
+// async function geminiPOST<TOut extends object, TPostBody extends object>(access: GeminiAccessSchema, modelRefId: string | null, body: TPostBody, apiPath: string /*, signal?: AbortSignal*/, useV1Alpha: boolean): Promise<TOut> {
+//   const { headers, url } = geminiAccess(access, modelRefId, apiPath, useV1Alpha);
+//   return await fetchJsonOrTRPCThrow<TOut, TPostBody>({ url, method: 'POST', headers, body, name: 'Gemini' });
+// }
 
 
-async function geminiGET<TOut extends object>(access: GeminiAccessSchema, modelRefId: string | null, apiPath: string /*, signal?: AbortSignal*/, useV1Alpha: boolean): Promise<TOut> {
-  const { headers, url } = geminiAccess(access, modelRefId, apiPath, useV1Alpha);
-  return await fetchJsonOrTRPCThrow<TOut>({ url, headers, name: 'Gemini' });
-}
-
-async function geminiPOST<TOut extends object, TPostBody extends object>(access: GeminiAccessSchema, modelRefId: string | null, body: TPostBody, apiPath: string /*, signal?: AbortSignal*/, useV1Alpha: boolean): Promise<TOut> {
-  const { headers, url } = geminiAccess(access, modelRefId, apiPath, useV1Alpha);
-  return await fetchJsonOrTRPCThrow<TOut, TPostBody>({ url, method: 'POST', headers, body, name: 'Gemini' });
-}
-
-
-// Input/Output Schemas
-
-export const geminiAccessSchema = z.object({
-  dialect: z.enum(['gemini']),
-  geminiKey: z.string(),
-  geminiHost: z.string(),
-  minSafetyLevel: GeminiWire_Safety.HarmBlockThreshold_enum,
-});
-export type GeminiAccessSchema = z.infer<typeof geminiAccessSchema>;
-
+// Router Input/Output Schemas
 
 const accessOnlySchema = z.object({
   access: geminiAccessSchema,
+});
+
+
+// SSRF guard: accept only the canonical `files/{id}` name; the download/metadata URLs are reconstructed
+// server-side (never fetch a client-supplied absolute URL with our key).
+const geminiFileNameSchema = z.string().regex(/^files\/[a-z0-9]+$/, 'invalid Gemini file name');
+
+// Files API (files.get) response - `sizeBytes` comes as a numeric string; `state` is PROCESSING|ACTIVE|FAILED.
+const GeminiFileGetResponse_schema = z.looseObject({
+  name: z.string(),
+  mimeType: z.string().optional(),
+  sizeBytes: z.union([z.string(), z.number()]).optional(),
+  createTime: z.string().optional(),
+  expirationTime: z.string().optional(),
+  state: z.string().optional(),
+});
+
+// Normalized metadata we return to the client chip.
+const GeminiFileMetadata_schema = z.object({
+  name: z.string(),
+  mimeType: z.string(),
+  sizeBytes: z.number(),
+  createTime: z.string(),
+  expirationTime: z.string(),
+  state: z.string(),
 });
 
 
@@ -89,32 +63,112 @@ const accessOnlySchema = z.object({
 export const llmGeminiRouter = createTRPCRouter({
 
   /* [Gemini] models.list = /v1beta/models */
-  listModels: publicProcedure
+  listModels: edgeProcedure
     .input(accessOnlySchema)
     .output(ListModelsResponse_schema)
-    .query(async ({ input }) => {
+    .query(async ({ input, signal }) => {
 
-      // get the models
-      const wireModels = await geminiGET(input.access, null, GeminiWire_API_Models_List.getPath, false);
-      const detailedModels = GeminiWire_API_Models_List.Response_schema.parse(wireModels).models;
-      geminiDevCheckForParserMisses_DEV(wireModels, detailedModels);
-      geminiDevCheckForSuperfluousModels_DEV(detailedModels.map(model => model.name));
+      const models = await listModelsRunDispatch(input.access, signal);
 
-      // NOTE: no need to retrieve info for each of the models (e.g. /v1beta/model/gemini-pro).,
-      //       as the List API already all the info on all the models
+      return { models };
+    }),
 
-      // first filter from the original list
-      const filteredModels = detailedModels.filter(geminiFilterModels);
 
-      // map to our output schema
-      const models = filteredModels
-        .map(geminiModelToModelDescription)
-        .filter(model => !!model)
-        .sort(geminiSortModels);
+  // --- [Gemini] Files API ---
+
+  /**
+   * Download bytes. The media URL rejects unregistered callers (403), so we proxy it through the key.
+   * Used by the hosted-video chip to download or re-play an Omni artifact within its 48h TTL.
+   */
+  fileApiDownload: edgeProcedure
+    .input(z.object({ access: geminiAccessSchema, fileName: geminiFileNameSchema }))
+    .query(async ({ input: { access, fileName } }) => {
+      const { headers, url } = geminiAccess(access, null, `/v1beta/${fileName}:download?alt=media`, false);
+      const response = await fetchResponseOrTRPCThrow({ url, headers, name: 'Gemini' });
+
+      // Guard against excessively large files (32 MB limit - generated clips are small; protects the edge fn)
+      const MAX_FILE_BYTES = 32 * 1024 * 1024;
+      const contentLength = parseInt(response.headers.get('content-length') || '0', 10);
+      if (contentLength > MAX_FILE_BYTES)
+        throw new Error(`File too large to download (${(contentLength / 1024 / 1024).toFixed(1)} MB, limit ${MAX_FILE_BYTES / 1024 / 1024} MB)`);
+
+      const arrayBuffer = await response.arrayBuffer();
+      if (arrayBuffer.byteLength > MAX_FILE_BYTES)
+        throw new Error(`File too large to download (${(arrayBuffer.byteLength / 1024 / 1024).toFixed(1)} MB, limit ${MAX_FILE_BYTES / 1024 / 1024} MB)`);
 
       return {
-        models: geminiModelsAddVariants(models),
+        base64Data: convert_UInt8Array_To_Base64(new Uint8Array(arrayBuffer), 'llms.gemini.fileDownload'),
+        mimeType: response.headers.get('content-type') || 'application/octet-stream',
       };
+    }),
+
+  /**
+   * Metadata (files.get): size, mime, expiry (createTime + 48h), state. A 404 means the
+   * file has expired/been deleted - the chip surfaces that as 'no longer available'.
+   */
+  fileApiGetMetadata: edgeProcedure
+    .input(z.object({ access: geminiAccessSchema, fileName: geminiFileNameSchema }))
+    .output(GeminiFileMetadata_schema)
+    .query(async ({ input: { access, fileName } }) => {
+      const { headers, url } = geminiAccess(access, null, `/v1beta/${fileName}`, false);
+      const raw = await fetchJsonOrTRPCThrow<object>({ url, headers, name: 'Gemini' });
+      const meta = GeminiFileGetResponse_schema.parse(raw);
+      return {
+        name: meta.name,
+        mimeType: meta.mimeType || '',
+        sizeBytes: typeof meta.sizeBytes === 'string' ? (parseInt(meta.sizeBytes, 10) || 0) : (meta.sizeBytes ?? 0),
+        createTime: meta.createTime || '',
+        expirationTime: meta.expirationTime || '',
+        state: meta.state || '',
+      };
+    }),
+
+  /**
+   * Resumable upload START for CSF-off services: the server holds the key, performs the start
+   * (forwarding the browser Origin - Google binds the upload session's CORS grant at start time,
+   * verified 2026-08-28), and returns the key-free bearer upload URL (upload_id only). The BYTES
+   * then go browser -> Google directly, so MB-scale payloads never traverse the edge fn.
+   */
+  fileApiUploadStart: edgeProcedure
+    .input(z.object({
+      access: geminiAccessSchema,
+      sizeBytes: z.number().int().positive().max(2 * 1024 * 1024 * 1024), // Files API cap: 2GB
+      mimeType: z.string().max(256),
+      displayName: z.string().max(128),
+      origin: z.string().max(256).optional(), // uploader's browser origin - scopes the session's CORS grant
+    }))
+    .mutation(async ({ input: { access, sizeBytes, mimeType, displayName, origin } }) => {
+      const { headers, url } = geminiAccess(access, null, '/upload/v1beta/files', false);
+      const response = await fetchResponseOrTRPCThrow({
+        url,
+        method: 'POST',
+        headers: {
+          ...headers,
+          ...(origin ? { 'Origin': origin } : {}),
+          'X-Goog-Upload-Protocol': 'resumable',
+          'X-Goog-Upload-Command': 'start',
+          'X-Goog-Upload-Header-Content-Length': String(sizeBytes),
+          'X-Goog-Upload-Header-Content-Type': mimeType,
+        },
+        body: { file: { display_name: displayName } },
+        name: 'Gemini',
+      });
+      const uploadUrl = response.headers.get('x-goog-upload-url');
+      if (!uploadUrl || uploadUrl.includes('key='))
+        throw new Error('Gemini upload start returned an unusable upload URL'); // never hand a key-bearing URL to the client
+      return { uploadUrl };
+    }),
+
+  /**
+   * Delete a file from Google now (before its 48h TTL): DELETE /v1beta/files/{id} -> 200.
+   * Used when the user removes a generated-video chip, so the artifact doesn't linger server-side.
+   */
+  fileApiDelete: edgeProcedure
+    .input(z.object({ access: geminiAccessSchema, fileName: geminiFileNameSchema }))
+    .mutation(async ({ input: { access, fileName } }) => {
+      const { headers, url } = geminiAccess(access, null, `/v1beta/${fileName}`, false);
+      await fetchResponseOrTRPCThrow({ url, method: 'DELETE', headers, name: 'Gemini' });
+      return { deleted: true };
     }),
 
 });

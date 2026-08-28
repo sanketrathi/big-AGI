@@ -12,8 +12,10 @@ import { Box, Chip } from '@mui/joy';
 
 import { copyToClipboard } from '~/common/util/clipboardUtils';
 import { downloadBlob } from '~/common/util/downloadUtils';
+import { useUXLabsStore } from '~/common/stores/store-ux-labs';
 
 import { CustomARenderer } from './CustomARenderer';
+import { remarkTableCellBreaks } from './tableBreaks.remark';
 import { wrapWithMarkdownSyntax } from './markdown.wrapper';
 
 
@@ -110,7 +112,7 @@ function TableRenderer({ children, node, ...props }: TableRendererProps) {
 
       {/* Download CSV link and Copy Markdown Button */}
       {tableData?.length >= 1 && (
-        <Box sx={_styles.buttons}>
+        <Box data-agi-no-copy /* do not copy these buttons */ sx={_styles.buttons}>
           {/* Download button*/}
           <Chip
             variant='soft'
@@ -210,14 +212,10 @@ const reactMarkdownComponents = {
 const remarkPluginsStable: UnifiedPluggable[] = [
   remarkGfm, // GitHub Flavored Markdown
   remarkMark, // Mark-Highlight, for ==yellow==
-  [remarkMath, {
-    /**
-     * NOTE: this could be configurable, some users reported liking single dollar signs math, despite even the official
-     * LaTeX documentation recommending against it: https://docs.mathjax.org/en/latest/input/tex/delimiters.html
-     * So in the future this could be a user setting.
-     */
-    singleDollarTextMath: false,
-  }],
+  remarkTableCellBreaks, // Convert <br> HTML tags inside tables to break nodes (for line breaks in table cells)
+  // NOTE: remarkMath is appended in CustomMarkdownRenderer below, because its `singleDollarTextMath` option
+  // is driven by a Labs flag - some users like $...$ math despite the official LaTeX docs recommending against
+  // it (https://docs.mathjax.org/en/latest/input/tex/delimiters.html), as it clashes with currency ($10) and tickers.
 ];
 
 const rehypePluginsStable: UnifiedPluggable[] = [
@@ -228,9 +226,10 @@ const rehypePluginsStable: UnifiedPluggable[] = [
 let warnedAboutLength = false;
 let warnedAboutPreprocessor = false;
 
-const INLINE_LATEX_REGEX = /(\s*)\\\(([^\n]*?)\\\)/g;
+// NOTE: no leading (\s*) capture here - it backtracks quadratically on long whitespace runs (#752)
+const INLINE_LATEX_REGEX = /\\\(([^\n]*?)\\\)/g;
 // noinspection RegExpRedundantEscape
-const BLOCK_LATEX_REGEX = /(\s*)\\\[((?:.|\n)*?)\\\]/g;
+const BLOCK_LATEX_REGEX = /\\\[((?:.|\n)*?)\\\]/g;
 
 /*
  * Convert OpenAI-style markdown with LaTeX to 'remark-math' compatible format.
@@ -243,7 +242,7 @@ function preprocessMarkdown(markdownText: string) {
     // for performance, disable the preprocessor if the text is too long
     if (markdownText.length > MAX_PREPROCESSOR_LENGTH) {
       if (!warnedAboutLength) {
-        console.warn('[DEV] Preprocessing markdown: text too long, skipping');
+        console.log('[DEV] Preprocessing markdown: text too long, skipping');
         warnedAboutLength = true;
       }
       return markdownText;
@@ -252,12 +251,12 @@ function preprocessMarkdown(markdownText: string) {
       // Replace LaTeX delimiters with $$...$$
       // Replace inline LaTeX delimiters \( and \) with $$
       // [2025-04-20] NOTE: it was reported that we had infinite recursion on the (.*?) version of inline math; as such, we now stay on the same line
-      .replace(INLINE_LATEX_REGEX, (_match, leadingSpace, mathContent) =>
-        `${leadingSpace}$$${mathContent}$$`,
+      .replace(INLINE_LATEX_REGEX, (_match, mathContent) =>
+        `$$${mathContent}$$`,
       )
       // Replace block LaTeX delimiters \[ and \] with $$
-      .replace(BLOCK_LATEX_REGEX, (_match, leadingSpace, mathContent) =>
-        `${leadingSpace}$$${mathContent}$$`,
+      .replace(BLOCK_LATEX_REGEX, (_match, mathContent) =>
+        `$$${mathContent}$$`,
       )
       // Replace <mark>...</mark> with ==...==, but not in multiple lines, or if preceded by a backtick (disabled, was (?<!`))
       .replace(/<mark>([\s\S]*?)<\/mark>/g, (_match, p1) => wrapWithMarkdownSyntax(p1, '=='))
@@ -273,10 +272,21 @@ function preprocessMarkdown(markdownText: string) {
 }
 
 export default function CustomMarkdownRenderer(props: { content: string, disablePreprocessor?: boolean }) {
+
+  // external state
+  const singleDollarLatex = useUXLabsStore((s) => s.labsSingleDollarLatex);
+
+  // memo plugins
+  const remarkPlugins = React.useMemo<UnifiedPluggable[]>(() => [
+    ...remarkPluginsStable,
+    [remarkMath, { singleDollarTextMath: singleDollarLatex }],
+  ], [singleDollarLatex]);
+
+
   return (
     <ReactMarkdown
       components={reactMarkdownComponents}
-      remarkPlugins={remarkPluginsStable}
+      remarkPlugins={remarkPlugins}
       rehypePlugins={rehypePluginsStable}
     >
       {props.disablePreprocessor ? props.content : preprocessMarkdown(props.content)}

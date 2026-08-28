@@ -11,7 +11,7 @@ import { InlineError } from '~/common/components/InlineError';
 import { Link } from '~/common/components/Link';
 import { apiQuery } from '~/common/util/trpc.client';
 
-import type { OllamaAccessSchema } from '../../server/ollama/ollama.router';
+import type { OllamaAccessSchema } from '../../server/ollama/ollama.access';
 
 
 // configuration
@@ -58,7 +58,7 @@ export function OllamaAdministration(props: { access: OllamaAccessSchema, onClos
     // optionally sort models by pulls
     let pullable = pullableData?.pullableModels || _stableNoPullable;
     if (sortByPulls)
-      pullable = pullable.toSorted((a, b) => b.pulls - a.pulls);
+      pullable = [...pullable].sort((a, b) => b.pulls - a.pulls);
 
     // return the tags and description for the selected model
     const selectedModel = pullable.find(p => p.id === selectedModelName) ?? null;

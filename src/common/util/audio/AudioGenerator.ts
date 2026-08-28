@@ -7,6 +7,7 @@ export namespace AudioGenerator {
   interface SoundOptions {
     volume?: number;
     roomSize?: 'small' | 'large';
+    filter?: 'underwater' | null;
   }
 
   // Advanced Sounds (with room acoustics)
@@ -379,7 +380,7 @@ export namespace AudioGenerator {
     if (!ctx) return;
 
     const now = ctx.currentTime;
-    const volume = options.volume ?? 0.2;
+    const volume = options.volume ?? 0.5;
     const noteDuration = 0.12;
 
     // const frequencies = [523.25, 783.99]; // C5, G5
@@ -399,9 +400,63 @@ export namespace AudioGenerator {
       gainNode.gain.exponentialRampToValueAtTime(0.001, now + (index + 1) * noteDuration);
 
       oscillator.connect(gainNode); // .connect(agMasterGain);
-      applyRoomAcoustics(ctx, gainNode, options.roomSize || 'small');
+      applyRoomAcoustics(ctx, gainNode, options.roomSize || 'small', options.filter);
       oscillator.start(now + index * noteDuration);
       oscillator.stop(now + (index + 2) * noteDuration);
+    });
+  }
+
+  /**
+   * Apollo 'Quindar'-style radio cues: NASA's 2525 Hz intro (mic keyed) / 2475 Hz outro
+   * (mic released) tones, with a slight frequency sag for the vintage transceiver flavor.
+   * - 'key': transmission open (e.g. recording started)
+   * - 'minute': still-transmitting minute marker (shorter, quieter)
+   * - 'over': transmission complete - the full key/unkey pair, 'over and out'
+   */
+  export function apolloCue(kind: 'key' | 'minute' | 'over', options: SoundOptions = {}): void {
+    const ctx = singleContext();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    const volume = options.volume ?? 0.12; // 2.5 kHz sits at peak ear sensitivity - keep gentle
+    switch (kind) {
+      case 'key':
+        quindarTone(ctx, now, 2525, 0.2, volume);
+        break;
+      case 'minute':
+        quindarTone(ctx, now, 2525, 0.11, volume * 0.6);
+        break;
+      case 'over':
+        quindarTone(ctx, now, 2525, 0.12, volume);
+        quindarTone(ctx, now + 0.18, 2475, 0.25, volume);
+        break;
+    }
+  }
+
+  /** Play an error notification sound when the assistant's response fails */
+  export function chatNotifyError(options: SoundOptions = {}): void {
+    const ctx = singleContext();
+    if (!ctx) return;
+
+    const now = ctx.currentTime;
+    const volume = options.volume ?? 0.5;
+    const noteDuration = 0.16;
+
+    // Descending tone with triangle wave: G4 → D4 (subtle roughness for error)
+    [392.00, 293.66].forEach((freq, index) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+
+      osc.type = 'triangle'; // Less smooth than sine
+      osc.frequency.setValueAtTime(freq, now + index * noteDuration);
+
+      gain.gain.setValueAtTime(0, now + index * noteDuration);
+      gain.gain.linearRampToValueAtTime(volume, now + index * noteDuration + 0.05);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + (index + 1) * noteDuration);
+
+      osc.connect(gain);
+      applyRoomAcoustics(ctx, gain, options.roomSize || 'small', options.filter);
+      osc.start(now + index * noteDuration);
+      osc.stop(now + (index + 2) * noteDuration);
     });
   }
 
@@ -575,7 +630,26 @@ export namespace AudioGenerator {
 
 /// Utility Functions ///
 
-function applyRoomAcoustics(ctx: AudioContext, source: AudioNode, roomSize: 'small' | 'large' = 'small'): void {
+function applyRoomAcoustics(ctx: AudioContext, source: AudioNode, roomSize: 'small' | 'large' = 'small', filter?: 'underwater' | null): void {
+  // If underwater, apply muffled + echo
+  if (filter === 'underwater') {
+    const lowpass = ctx.createBiquadFilter();
+    lowpass.type = 'lowpass';
+    lowpass.frequency.value = 250;
+
+    const delay = ctx.createDelay();
+    delay.delayTime.value = 0.08;
+
+    const echo = ctx.createGain();
+    echo.gain.value = 0.3;
+
+    source.connect(lowpass);
+    lowpass.connect(agMasterGain);
+    lowpass.connect(delay).connect(echo).connect(agMasterGain);
+    return;
+  }
+
+  // Apply room reverb (normal case)
   const convolver = ctx.createConvolver();
   const reverbTime = roomSize === 'large' ? 2 : 0.5;
   const decayRate = roomSize === 'large' ? 0.5 : 2;
@@ -677,4 +751,23 @@ function singleContext() {
     void agCtx.resume();
   }
   return agCtx;
+}
+
+/** One Quindar-style tone: sine + faint 2nd harmonic ('transmitted' color), slight downward frequency sag, click-free envelope. */
+function quindarTone(ctx: AudioContext, at: number, freqHz: number, durationSec: number, peak: number): void {
+  for (const [harmonic, level] of [[1, peak], [2, peak * 0.1]]) {
+    const o = ctx.createOscillator();
+    const g = ctx.createGain();
+    o.type = 'sine';
+    // analog oscillator 'sag': starts a touch sharp, drifts flat over the tone
+    o.frequency.setValueAtTime(freqHz * harmonic * 1.012, at);
+    o.frequency.exponentialRampToValueAtTime(freqHz * harmonic * 0.996, at + durationSec);
+    g.gain.setValueAtTime(0, at);
+    g.gain.linearRampToValueAtTime(level, at + 0.005);
+    g.gain.setValueAtTime(level, at + Math.max(0.005, durationSec - 0.04));
+    g.gain.exponentialRampToValueAtTime(0.001, at + durationSec);
+    o.connect(g).connect(agMasterGain);
+    o.start(at);
+    o.stop(at + durationSec + 0.02);
+  }
 }

@@ -8,6 +8,8 @@ import { Is } from '~/common/util/pwaUtils';
 
 export type ChatAutoSpeakType = 'off' | 'firstLine' | 'all';
 
+export type ChatThinkingPolicy = 'last-only' | 'all' | 'discard-all';
+
 export type TokenCountingMethod = 'accurate' | 'approximate';
 
 
@@ -38,8 +40,8 @@ interface AppChatStore {
   autoVndAntBreakpoints: boolean;
   setAutoVndAntBreakpoints: (autoVndAntBreakpoints: boolean) => void;
 
-  chatKeepLastThinkingOnly: boolean,
-  setChatKeepLastThinkingOnly: (chatKeepLastThinkingOnly: boolean) => void;
+  chatThinkingPolicy: ChatThinkingPolicy,
+  setChatThinkingPolicy: (chatThinkingPolicy: ChatThinkingPolicy) => void;
 
   tokenCountingMethod: TokenCountingMethod;
   setTokenCountingMethod: (tokenCountingMethod: TokenCountingMethod) => void;
@@ -47,6 +49,9 @@ interface AppChatStore {
   // chat UI
 
   clearFilters: () => void;
+
+  filterHasBeamOpen: boolean;
+  toggleFilterHasBeamOpen: () => void;
 
   filterHasDocFragments: boolean;
   toggleFilterHasDocFragments: () => void;
@@ -59,6 +64,9 @@ interface AppChatStore {
 
   filterIsArchived: boolean;
   toggleFilterIsArchived: () => void;
+
+  filterOlderThanDays: number | null;
+  setFilterOlderThanDays: (days: number | null) => void;
 
   micTimeoutMs: number;
   setMicTimeoutMs: (micTimeoutMs: number) => void;
@@ -74,6 +82,13 @@ interface AppChatStore {
 
   showSystemMessages: boolean;
   setShowSystemMessages: (showSystemMessages: boolean) => void;
+
+  showToolbarNavigation: boolean;
+  toggleShowToolbarNavigation: () => void;
+
+  // browser-storage disclaimer (warning shown at the bottom of the chat list)
+  storageWarningDismissed: boolean;
+  dismissStorageWarning: () => void;
 
   // other chat-specific configuration
 
@@ -110,15 +125,18 @@ const useAppChatStore = create<AppChatStore>()(persist(
     autoVndAntBreakpoints: true, // 2024-08-24: on as it saves user's money
     setAutoVndAntBreakpoints: (autoVndAntBreakpoints: boolean) => _set({ autoVndAntBreakpoints }),
 
-    chatKeepLastThinkingOnly: true,
-    setChatKeepLastThinkingOnly: (chatKeepLastThinkingOnly: boolean) => _set({ chatKeepLastThinkingOnly }),
+    chatThinkingPolicy: 'last-only',
+    setChatThinkingPolicy: (chatThinkingPolicy: ChatThinkingPolicy) => _set({ chatThinkingPolicy }),
 
     tokenCountingMethod: Is.Desktop ? 'accurate' : 'approximate',
     setTokenCountingMethod: (tokenCountingMethod: TokenCountingMethod) => _set({ tokenCountingMethod }),
 
     // Chat UI
 
-    clearFilters: () => _set({ filterIsArchived: false, filterHasDocFragments: false, filterHasImageAssets: false, filterHasStars: false }),
+    clearFilters: () => _set({ filterIsArchived: false, filterHasBeamOpen: false, filterHasDocFragments: false, filterHasImageAssets: false, filterHasStars: false, filterOlderThanDays: null }),
+
+    filterHasBeamOpen: false,
+    toggleFilterHasBeamOpen: () => _set(({ filterHasBeamOpen }) => ({ filterHasBeamOpen: !filterHasBeamOpen })),
 
     filterHasDocFragments: false,
     toggleFilterHasDocFragments: () => _set(({ filterHasDocFragments }) => ({ filterHasDocFragments: !filterHasDocFragments })),
@@ -131,6 +149,9 @@ const useAppChatStore = create<AppChatStore>()(persist(
 
     filterIsArchived: false,
     toggleFilterIsArchived: () => _set(({ filterIsArchived }) => ({ filterIsArchived: !filterIsArchived })),
+
+    filterOlderThanDays: null,
+    setFilterOlderThanDays: (filterOlderThanDays: number | null) => _set({ filterOlderThanDays }),
 
     micTimeoutMs: 5000,
     setMicTimeoutMs: (micTimeoutMs: number) => _set({ micTimeoutMs }),
@@ -148,6 +169,14 @@ const useAppChatStore = create<AppChatStore>()(persist(
     showSystemMessages: false,
     setShowSystemMessages: (showSystemMessages: boolean) => _set({ showSystemMessages }),
 
+    // on by default; no setting UI on `main` (the breadcrumb shows the chat title in the top bar); `dev` adds the toggle
+    showToolbarNavigation: true,
+    toggleShowToolbarNavigation: () => _set(({ showToolbarNavigation }) => ({ showToolbarNavigation: !showToolbarNavigation })),
+
+    // browser-storage disclaimer: shown until the user acknowledges it (persisted, so it survives reloads but not a cache clear - which is exactly the event it warns about)
+    storageWarningDismissed: false,
+    dismissStorageWarning: () => _set({ storageWarningDismissed: true }),
+
     // Other chat-specific configuration
 
     notificationEnabledModelIds: [],
@@ -162,19 +191,27 @@ const useAppChatStore = create<AppChatStore>()(persist(
 
   }), {
     name: 'app-app-chat',
-    version: 1,
+    version: 3, // note: v2 is a `dev`-only progressive-disclosure migration (panels not present on `main`); jump 1 -> 3 to stay aligned
 
     onRehydrateStorage: () => (state) => {
       if (!state) return;
 
       // for now, let text diff be off by default
       state.showTextDiff = false;
+
+      // reset the notifications for now, to make sure people don't forget the settings
+      state.notificationEnabledModelIds = [];
     },
 
     migrate: (state: any, fromVersion: number): AppChatStore => {
       // 0 -> 1: autoTitleChat was off by mistake - turn it on [Remove past Dec 1, 2023]
       if (state && fromVersion < 1)
         state.autoTitleChat = true;
+
+      // 1 -> 3: show the conversation title in the top bar by default (v2 is a `dev`-only step)
+      if (state && fromVersion < 3)
+        state.showToolbarNavigation = true;
+
       return state;
     },
   },
@@ -189,7 +226,7 @@ export const useChatAutoAI = () => useAppChatStore(useShallow(state => ({
   autoSuggestQuestions: state.autoSuggestQuestions,
   autoTitleChat: state.autoTitleChat,
   autoVndAntBreakpoints: state.autoVndAntBreakpoints,
-  chatKeepLastThinkingOnly: state.chatKeepLastThinkingOnly,
+  chatThinkingPolicy: state.chatThinkingPolicy,
   tokenCountingMethod: state.tokenCountingMethod,
   setAutoSpeak: state.setAutoSpeak,
   setAutoSuggestAttachmentPrompts: state.setAutoSuggestAttachmentPrompts,
@@ -198,7 +235,7 @@ export const useChatAutoAI = () => useAppChatStore(useShallow(state => ({
   setAutoSuggestQuestions: state.setAutoSuggestQuestions,
   setAutoTitleChat: state.setAutoTitleChat,
   setAutoVndAntBreakpoints: state.setAutoVndAntBreakpoints,
-  setChatKeepLastThinkingOnly: state.setChatKeepLastThinkingOnly,
+  setChatThinkingPolicy: state.setChatThinkingPolicy,
   setTokenCountingMethod: state.setTokenCountingMethod,
 })));
 
@@ -210,7 +247,6 @@ export const getChatAutoAI = (): {
   autoSuggestQuestions: boolean,
   autoTitleChat: boolean,
   autoVndAntBreakpoints: boolean,
-  chatKeepLastThinkingOnly: boolean,
 } => useAppChatStore.getState();
 
 export const useChatAutoSuggestHTMLUI = (): boolean =>
@@ -218,6 +254,9 @@ export const useChatAutoSuggestHTMLUI = (): boolean =>
 
 export const useChatAutoSuggestAttachmentPrompts = (): boolean =>
   useAppChatStore(state => state.autoSuggestAttachmentPrompts);
+
+export const getChatThinkingPolicy = (): ChatThinkingPolicy =>
+  useAppChatStore.getState().chatThinkingPolicy;
 
 export const getChatTokenCountingMethod = (): TokenCountingMethod =>
   useAppChatStore.getState().tokenCountingMethod;
@@ -230,13 +269,17 @@ export const useChatMicTimeoutMs = (): [number, (micTimeoutMs: number) => void] 
 
 export function useChatDrawerFilters() {
   return useAppChatStore(useShallow(state => ({
+    filterHasBeamOpen: state.filterHasBeamOpen,
     filterHasDocFragments: state.filterHasDocFragments,
     filterHasImageAssets: state.filterHasImageAssets,
     filterHasStars: state.filterHasStars,
     filterIsArchived: state.filterIsArchived,
+    filterOlderThanDays: state.filterOlderThanDays,
     showPersonaIcons: state.showPersonaIcons2,
     showRelativeSize: state.showRelativeSize,
     clearFilters: state.clearFilters,
+    setFilterOlderThanDays: state.setFilterOlderThanDays,
+    toggleFilterHasBeamOpen: state.toggleFilterHasBeamOpen,
     toggleFilterHasDocFragments: state.toggleFilterHasDocFragments,
     toggleFilterHasImageAssets: state.toggleFilterHasImageAssets,
     toggleFilterHasStars: state.toggleFilterHasStars,
@@ -254,6 +297,13 @@ export const getChatShowSystemMessages = (): boolean =>
 
 export const useChatShowSystemMessages = (): [boolean, (showSystemMessages: boolean) => void] =>
   useAppChatStore(useShallow(state => [state.showSystemMessages, state.setShowSystemMessages]));
+
+export const useChatShowToolbarNavigation = (): boolean =>
+  useAppChatStore(state => state.showToolbarNavigation);
+
+export function useChatStorageWarning(): [boolean, () => void] {
+  return useAppChatStore(useShallow(state => [state.storageWarningDismissed, state.dismissStorageWarning]));
+}
 
 export const getIsNotificationEnabledForModel = (modelId: DLLMId): boolean =>
   useAppChatStore.getState().isNotificationEnabledForModel(modelId);
